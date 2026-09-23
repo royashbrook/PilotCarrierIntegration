@@ -1,0 +1,7 @@
+{
+  "pilot": { "carrier_id": 123 },
+  "poll": { "window_days": 30, "status_field": "dispatchOrderStatusTypeId", "skip_values": [4] },
+  "create": { "partner": "PILOT", "billto": "ACMEWHL", "division": "DIV", "scac": "SCAC" },
+  "tmw": { "expected_database": "TMW_Test", "max_parallel": 10, "retry_attempts": 3, "retry_delay_seconds": 2, "command_timeout_seconds": 120 },
+  "idempotency": { "pilot_id_as_po_ref": true, "archive_source_prefix": "PILOTAPI" }
+}

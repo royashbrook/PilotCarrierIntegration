@@ -1,0 +1,39 @@
+[
+  {
+    "_comment": "Reduced from the nested order/item shape returned by the live Pilot carrier API on 2026-07-29.",
+    "dispatchOrderId": 10877997,
+    "dispatchOrderGuid": "117683471724952000",
+    "bolNumber": null,
+    "dispatchOrderTypeId": 20,
+    "dispatchOrderTypeName": "Clean Retail - Trips 3.0 ",
+    "dispatchOrderCreationTypeId": 1,
+    "dispatchOrderCreationTypeName": "DD",
+    "dispatchOrderSourceSystemId": 6,
+    "dispatchOrderSourceSystemName": "TRIPS 3.0",
+    "dispatchOrderStatusTypeId": 2,
+    "deliveryWindowStartDateTime": "2026-07-27T23:00:00",
+    "deliveryWindowEndDateTime": "2026-07-28T06:00:00",
+    "scheduledStartDateTime": "2026-07-27T23:12:00",
+    "scheduledEndDateTime": "2026-07-28T05:48:00",
+    "sourceSystemOrderId": "pilot-source-10877997",
+    "dispatchOrderItems": [
+      {
+        "dispatchOrderItemId": 11888001,
+        "isDeleted": false,
+        "lineOfOperationsSystemId": 14673,
+        "looSystemId": 10180,
+        "gallons": 4700,
+        "productCategory": "Bio Diesel",
+        "productCode": "B99-UL",
+        "productName": "ULSD #2 W/ 99% BIO",
+        "productSystemId": 915,
+        "wraProductSystemId": 915,
+        "productTypeSystemId": 15,
+        "terminalMarketId": 315,
+        "customerLocationSystemId": null,
+        "locationSystemId": 55979,
+        "sourceSystemOrderItemId": 1
+      }
+    ]
+  }
+]

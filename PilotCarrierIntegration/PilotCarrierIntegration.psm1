@@ -2,6 +2,7 @@
 # Each Invoke-* runs DataAgent in the settings file's folder, so the log and output land there.
 
 . (Join-Path $PSScriptRoot 'Bols.ps1')
+. (Join-Path $PSScriptRoot 'Orders.ps1')
 
 # "env:NAME" anywhere in the settings is read from that environment variable, so secrets stay out of the file
 function Resolve-EnvValue($Value) {
@@ -60,4 +61,25 @@ function Invoke-PilotCarrierBols {
   Invoke-DataAgent (New-PilotCarrierBolConfig $Settings)
 }
 
-Export-ModuleMember -Function Invoke-PilotCarrierBols, New-PilotCarrierBolConfig
+# Orders: Pilot carrier orders -> translate -> stage in TMW DataExchange at EDI state 10 for ops to accept
+function New-PilotCarrierOrderConfig {
+  [CmdletBinding()]
+  param([Parameter(Mandatory, Position = 0)][string]$Settings)
+  $s = Read-PilotCarrierSettings $Settings
+  $config = @{
+    directory = $s.directory
+    src = @{ adapter = Get-AdapterPath 'order-read'; args = @{ Settings = $s } }
+    fmt = @{ adapter = Get-AdapterPath 'order-plan'; args = @{ Path = 'out/pilot-orders.xml' } }
+    dst = @{ adapter = Get-AdapterPath 'order-stage'; args = @{ Settings = $s } }
+  }
+  foreach ($name in 'keepdays', 'purgefiles') { if ($s.ContainsKey($name)) { $config[$name] = $s[$name] } }
+  $config
+}
+
+function Invoke-PilotCarrierOrders {
+  [CmdletBinding()]
+  param([Parameter(Mandatory, Position = 0)][string]$Settings)
+  Invoke-DataAgent (New-PilotCarrierOrderConfig $Settings)
+}
+
+Export-ModuleMember -Function Invoke-PilotCarrierBols, New-PilotCarrierBolConfig, Invoke-PilotCarrierOrders, New-PilotCarrierOrderConfig
