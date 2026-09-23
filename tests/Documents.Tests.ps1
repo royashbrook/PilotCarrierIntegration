@@ -152,7 +152,8 @@ Describe 'a Pilot document run' {
       $Payload.dispatchOrderItemId -eq 6002 -and $Payload.bolDatetime -eq ([datetime]'2026-01-02T08:30:00').ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss') -and
       $Payload.file -eq "data:application/pdf;base64,$([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('%PDF-9001')))"
     }
-    Should -Invoke Get-ShipsDocument -ModuleName DocumentAgent -Times 2 -Exactly
+    # one scan, two items: fetched once, uploaded twice
+    Should -Invoke Get-ShipsDocument -ModuleName DocumentAgent -Times 1 -Exactly
     Should -Invoke Invoke-Sqlcmd -ModuleName PilotCarrierIntegration -Times 1 -Exactly -ParameterFilter {
       $InputFile -eq 'get-data.sql' -and $Variable -is [string[]] -and ($Variable -join ',') -eq 'BillTo=ACMEWHL,LookbackDays=7'
     }
