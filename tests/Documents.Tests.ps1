@@ -154,7 +154,7 @@ Describe 'a Pilot document run' {
     }
     Should -Invoke Get-ShipsDocument -ModuleName DocumentAgent -Times 2 -Exactly
     Should -Invoke Invoke-Sqlcmd -ModuleName PilotCarrierIntegration -Times 1 -Exactly -ParameterFilter {
-      $InputFile -eq 'get-data.sql' -and ($Variable -join ',') -eq 'BillTo=ACMEWHL,LookbackDays=7'
+      $InputFile -eq 'get-data.sql' -and $Variable -is [string[]] -and ($Variable -join ',') -eq 'BillTo=ACMEWHL,LookbackDays=7'
     }
     Should -Invoke New-PilotSession -ModuleName PilotCarrierIntegration -ParameterFilter { $Credential.GetNetworkCredential().Password -eq 'from-env-secret' -and $CarrierId -eq 123 }
     (Get-Content "$job/sent/5001-6001-9001.json" -Raw | ConvertFrom-Json).delivery.status | Should -Be 'success'

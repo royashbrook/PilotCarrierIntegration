@@ -1,6 +1,6 @@
 @{
   RootModule = 'PilotCarrierIntegration.psm1'
-  ModuleVersion = '0.3.0'
+  ModuleVersion = '0.3.1'
   GUID = '393f77b8-b11b-4369-ad42-227e1ac0e79f'
   Author = 'Roy Ashbrook'
   CompanyName = 'ashbrook.io'
