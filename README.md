@@ -6,7 +6,7 @@ its settings file's folder, so the log, cleanup and idle marker match any other 
 
 ```powershell
 Import-Module PilotCarrierIntegration   # brings DataAgent and PilotCarrierClient with it
-Invoke-PilotCarrierBols "$PSScriptRoot/settings.json"     # or Invoke-PilotCarrierOrders
+Invoke-PilotCarrierBols "$PSScriptRoot/settings.json"     # or Invoke-PilotCarrierOrders, Invoke-PilotCarrierDocuments
 ```
 
 ## BOL completions
@@ -105,3 +105,49 @@ TMW needs the trading partner (`create.partner`) set up with its bill-to and DX 
 staging SQL and is rolled back.
 
 `New-PilotCarrierOrderConfig` returns the DataAgent config without running it.
+
+## Documents
+
+Scanned BOLs -> the Pilot order item they belong to -> Pilot `PUT /document`, each once. A
+[DocumentAgent](https://github.com/royashbrook/DocumentAgent) run, so documents are fetched, sent
+one at a time and kept in receipts the same way as any other document job.
+
+The feed's own query returns one row per scanned document and order reference: `EbeDocumentId`,
+`DocumentType`, `OrderNumber`, `BolNumber`, `PilotOrderRef` (Pilot's `dispatchOrderId`), `IndexedAt`,
+and optionally `DispatchOrderId`, `DispatchOrderItemId` and `AttachmentName`. The run adds
+`LookbackDays=<lookback_days>` to the query's variables, and reads Pilot orders over the same days.
+
+- A document goes only when Pilot's BOL list has its BOL on exactly one of its orders, and that order
+  has an item carrying the BOL. A single-item order matches on the order's BOL. Otherwise it waits,
+  and the log says why.
+- One document can go to several items of an order, one upload each.
+- A document already attached to the item on Pilot is skipped, receipt or not.
+- The upload is the PDF inline, with the scan's index time in UTC as `bolDatetime`. The index time
+  is read as the runner's local time.
+- Receipts are `sent/<order>-<item>-<document>.json`. A refused upload gets no receipt, the rest
+  continue, and the run fails naming it.
+
+```json
+{
+  "keepdays": 10,
+  "purgefiles": "*.log",
+  "lookback_days": 7,
+  "pilot": { "base_url": "env:PILOT_BASE_URL", "...": "as above", "carrier_id": 123 },
+  "query": {
+    "InputFile": "get-data.sql",
+    "ConnectionString": "env:IMAGING_CONNECTION_STRING",
+    "Variable": ["BillTo=BILLTO"],
+    "QueryTimeout": 1800
+  },
+  "documents": {
+    "adapter": "ships",
+    "args": { "BaseUrl": "https://host/ships5web/", "Username": "reader", "Password": "env:READER_PASSWORD" }
+  }
+}
+```
+
+`query` is passed to `Invoke-Sqlcmd`, and `documents` is any DocumentAgent documents source. To
+test, add `"dry_run": true`: the run reads and plans, names what would go, and fetches and sends
+nothing. `max_sends` caps the uploads per run.
+
+`New-PilotCarrierDocumentConfig` returns the DataAgent config without running it.

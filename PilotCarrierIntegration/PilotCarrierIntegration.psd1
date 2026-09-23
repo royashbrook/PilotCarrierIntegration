@@ -1,18 +1,19 @@
 @{
   RootModule = 'PilotCarrierIntegration.psm1'
-  ModuleVersion = '0.2.0'
+  ModuleVersion = '0.3.0'
   GUID = '393f77b8-b11b-4369-ad42-227e1ac0e79f'
   Author = 'Roy Ashbrook'
   CompanyName = 'ashbrook.io'
   Copyright = '(c) 2026 royashbrook. All rights reserved.'
-  Description = 'Pilot carrier feeds as DataAgent runs, on PilotCarrierClient: BOL completions from TMW to Pilot, and Pilot orders staged in TMW DataExchange.'
+  Description = 'Pilot carrier feeds as DataAgent runs, on PilotCarrierClient: BOL completions from TMW to Pilot, Pilot orders staged in TMW DataExchange, and scanned BOLs uploaded to their Pilot order items.'
   PowerShellVersion = '7.4'
   RequiredModules = @(
     @{ ModuleName = 'DataAgent'; RequiredVersion = '0.5.0' }
+    @{ ModuleName = 'DocumentAgent'; RequiredVersion = '0.3.0' }
     @{ ModuleName = 'PilotCarrierClient'; RequiredVersion = '1.0.0' }
     @{ ModuleName = 'Add-PrefixForLogging'; ModuleVersion = '1.0.0.2' }
   )
-  FunctionsToExport = @('Invoke-PilotCarrierBols', 'New-PilotCarrierBolConfig', 'Invoke-PilotCarrierOrders', 'New-PilotCarrierOrderConfig')
+  FunctionsToExport = @('Invoke-PilotCarrierBols', 'New-PilotCarrierBolConfig', 'Invoke-PilotCarrierOrders', 'New-PilotCarrierOrderConfig', 'Invoke-PilotCarrierDocuments', 'New-PilotCarrierDocumentConfig')
   AliasesToExport = @()
   CmdletsToExport = @()
   VariablesToExport = @()

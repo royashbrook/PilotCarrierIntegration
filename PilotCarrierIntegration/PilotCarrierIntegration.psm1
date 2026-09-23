@@ -3,6 +3,7 @@
 
 . (Join-Path $PSScriptRoot 'Bols.ps1')
 . (Join-Path $PSScriptRoot 'Orders.ps1')
+. (Join-Path $PSScriptRoot 'Documents.ps1')
 
 # "env:NAME" anywhere in the settings is read from that environment variable, so secrets stay out of the file
 function Resolve-EnvValue($Value) {
@@ -82,4 +83,27 @@ function Invoke-PilotCarrierOrders {
   Invoke-DataAgent (New-PilotCarrierOrderConfig $Settings)
 }
 
-Export-ModuleMember -Function Invoke-PilotCarrierBols, New-PilotCarrierBolConfig, Invoke-PilotCarrierOrders, New-PilotCarrierOrderConfig
+# Documents: scanned BOLs -> their Pilot order item -> Pilot PUT /document, once each, as a DocumentAgent run
+function New-PilotCarrierDocumentConfig {
+  [CmdletBinding()]
+  param([Parameter(Mandatory, Position = 0)][string]$Settings)
+  $s = Read-PilotCarrierSettings $Settings
+  $agent = @{
+    items = @{ adapter = Get-AdapterPath 'doc-items'; args = @{ Pilot = $s.pilot; Query = $s.query; LookbackDays = $s.lookback_days }; key = 'key' }
+    documents = $s.documents
+    delivery = @{ adapter = Get-AdapterPath 'doc-send'; args = @{ Pilot = $s.pilot } }
+  }
+  foreach ($name in 'receipts', 'dry_run', 'max_sends', 'keepdays', 'purgefiles') { if ($s.ContainsKey($name)) { $agent[$name] = $s[$name] } }
+  $config = New-DocumentAgentConfig $agent
+  $config.directory = $s.directory
+  $config
+}
+
+function Invoke-PilotCarrierDocuments {
+  [CmdletBinding()]
+  param([Parameter(Mandatory, Position = 0)][string]$Settings)
+  Invoke-DataAgent (New-PilotCarrierDocumentConfig $Settings)
+}
+
+Export-ModuleMember -Function Invoke-PilotCarrierBols, New-PilotCarrierBolConfig, Invoke-PilotCarrierOrders, New-PilotCarrierOrderConfig,
+  Invoke-PilotCarrierDocuments, New-PilotCarrierDocumentConfig
