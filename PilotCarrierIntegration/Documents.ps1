@@ -133,7 +133,7 @@ function Read-PilotCarrierDocuments {
   $query = @{} + $Options.Query
   # Invoke-Sqlcmd takes -Variable untyped and rejects pipeline-wrapped strings, so plain strings only
   $query.Variable = [string[]]@(@($query.Variable) + "LookbackDays=$days" | Where-Object { $_ })
-  Import-Module SqlServer -Cmdlet Invoke-Sqlcmd
+  Import-Module SqlServer -RequiredVersion 22.4.5.1 -Cmdlet Invoke-Sqlcmd
   $rows = @(Invoke-Sqlcmd -OutputAs DataRows @query)
   $documents = @(ConvertFrom-PilotDocumentRows -Rows $rows)
   $bols = @(Get-PilotBol -Session $script:PilotDocumentSession)
