@@ -472,3 +472,19 @@ Describe 'cache lifetimes' {
     }
   }
 }
+
+Describe 'the Pilot read window' {
+  BeforeAll {
+    Import-Module "$PSScriptRoot/../PilotCarrierIntegration/PilotCarrierIntegration.psd1" -Force
+  }
+  It 'starts lookback_days before today and runs window_days from the start' {
+    InModuleScope PilotCarrierIntegration {
+      Mock Get-PilotOrder { @() }
+      Mock Write-Log
+      $null = Receive-PilotOrders ([pscustomobject]@{ poll = [pscustomobject]@{ window_days = 30; lookback_days = 7 } }) ([pscustomobject]@{}) 0
+      Should -Invoke Get-PilotOrder -Times 1 -Exactly -ParameterFilter {
+        $StartDate -eq [datetime]::Today.AddDays(-7) -and $EndDate -eq [datetime]::Today.AddDays(23)
+      }
+    }
+  }
+}

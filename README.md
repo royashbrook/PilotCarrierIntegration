@@ -39,7 +39,7 @@ The feed's own query returns completed freight, one row per freight line. It nee
 - Each done order leaves a file in the cache folder, `cache/<dispatchOrderId>.json` (`cache` in settings
   to move it), like the other order feeds: what was sent, a hash of it, and Pilot's answer. The query's
   window overlaps runs; an order that matches its cache file is logged `Already:` and not sent again, and a gallons or BOL correction
-  is sent again. A cache file goes `keep_days` (7 by default) after its send.
+  is sent again. A cache file goes `keep_days` (2 by default) after its send.
 - An answer that is not done (turned down, or not every item with a BOL) is logged `Not done:` with
   Pilot's answer and tried again next run. The run fails only when Pilot cannot be reached (auth,
   throttling, a server error, a timeout).
@@ -77,7 +77,8 @@ plans and names what would go, and sends nothing.
 Pilot carrier orders -> translate -> stage each one in TMW DataExchange at EDI state 10, for people
 to accept or reject in TMW.
 
-- Orders are read over a rolling window (`poll.window_days`, 30 by default, at least 2). Pilot's read
+- Orders are read over a rolling window starting `poll.lookback_days` before today (0 by default) and
+  running `poll.window_days` (30 by default, at least 2; Pilot reads at most 30). Pilot's read
   has no status filter, so one filter runs right after it: a status in `poll.include_statuses`
   (Scheduled, `2`, by default), a delivery window that ends after it starts, and at least one active
   item, every one with gallons. An order that fails stays in Pilot and is read again next run.
@@ -100,7 +101,7 @@ to accept or reject in TMW.
   "keepdays": 10,
   "purgefiles": "*.log",
   "pilot": { "base_url": "env:PILOT_BASE_URL", "...": "as above", "carrier_id": 123 },
-  "poll": { "window_days": 30, "include_statuses": [2] },
+  "poll": { "lookback_days": 0, "window_days": 30, "include_statuses": [2] },
   "create": { "partner": "PILOT", "billto": "BILLTO", "division": "DIV", "scac": "SCAC" },
   "tmw": {
     "connection_string": "env:TMW_CONNECTION_STRING",

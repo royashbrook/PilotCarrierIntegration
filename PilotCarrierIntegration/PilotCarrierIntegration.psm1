@@ -47,7 +47,7 @@ function New-PilotCarrierBolConfig {
   $config = @{
     directory = $s.directory
     src = @{ adapter = 'sql'; args = $s.tmw }
-    fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Cache = $cache; KeepDays = $(if ($s.dry_run) { 0 } elseif ($s.keep_days) { [int]$s.keep_days } else { 7 }) } }
+    fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Cache = $cache; KeepDays = $(if ($s.dry_run) { 0 } elseif ($s.keep_days) { [int]$s.keep_days } else { 2 }) } }
     dst = if ($s.dry_run) {
       @{ adapter = Get-AdapterPath 'bol-dry-run'; args = @{} }
     } else {

@@ -102,7 +102,7 @@ function Send-PilotBol {
 # DataAgent formatter: TMW rows in, plan file out
 function Save-PilotBolPlan {
   param($Data, [hashtable]$Options)
-  # a cache file is kept keep_days (7 by default) after its send, read from the file itself; the TMW query
+  # a cache file is kept keep_days (2 by default, like gravitate's finished orders) after its send, read from the file itself; the TMW query
   # looks back 24 hours, so an order that old only comes back if TMW changes it, and then it goes again
   if ($Options.KeepDays -gt 0 -and (Test-Path -LiteralPath $Options.Cache)) {
     $cutoff = [datetime]::UtcNow.AddDays(-$Options.KeepDays)

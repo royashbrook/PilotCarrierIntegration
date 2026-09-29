@@ -322,7 +322,8 @@ function Receive-PilotOrders {
     }
   }
 
-  $start = [datetime]::Today
+  # the read starts poll.lookback_days before today (0 by default) and runs window_days from there
+  $start = [datetime]::Today.AddDays(-[int]$Cfg.poll.lookback_days)
   $records = @(Get-PilotOrder -Session $Session -StartDate $start -EndDate $start.AddDays($WindowDays))
   # Pilot's read has no status filter (probed 2026-09-29), so every check that needs only the order
   # itself runs here, before anything else is read
