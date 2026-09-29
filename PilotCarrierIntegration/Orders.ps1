@@ -13,26 +13,48 @@ function New-PilotReferenceIndex {
   $index
 }
 
+# Pilot's location, terminal and contract lists only fill in names and addresses, and they rarely change.
+# Each list is kept in the cache folder and read from Pilot again only when an order names an id the
+# kept copy lacks. Without a cache folder (a dry run, a test) the lists are read every time.
 function Get-PilotReferenceData {
-  param($Session)
-  $locations = @(Get-PilotLocation -Session $Session)
-  $terminals = @(Get-PilotTerminal -Session $Session)
-  $contracts = @(Get-PilotContract -Session $Session)
-
-  [pscustomobject]@{
-    locations = New-PilotReferenceIndex @($locations) 'locationSystemId'
-    terminals = New-PilotReferenceIndex @($terminals) 'terminalId'
-    contracts = New-PilotReferenceIndex @($contracts) 'contractSystemId'
+  param($Session, [AllowEmptyCollection()]$Records = @(), [string]$CacheDir)
+  $lists = @(
+    @{ name = 'location'; key = 'locationSystemId'; read = { Get-PilotLocation -Session $Session }
+      ids = { foreach ($i in $_.dispatchOrderItems) { if ($null -ne $i.locationSystemId) { $i.locationSystemId } else { $i.customerLocationSystemId } } } }
+    @{ name = 'terminal'; key = 'terminalId'; read = { Get-PilotTerminal -Session $Session }
+      ids = { $_.dispatchOrderItems.lineOfOperationsSystemId } }
+    @{ name = 'contract'; key = 'contractSystemId'; read = { Get-PilotContract -Session $Session }
+      ids = { $_.dispatchOrderItems.looSystemId } }
+  )
+  $data = [ordered]@{}
+  foreach ($list in $lists) {
+    $path = if ($CacheDir) { Join-Path $CacheDir "reference-$($list.name).json" }
+    $rows = if ($path -and (Test-Path -LiteralPath $path)) { @(Get-Content -LiteralPath $path -Raw | ConvertFrom-Json) } else { $null }
+    $index = if ($null -ne $rows) { New-PilotReferenceIndex $rows $list.key } else { $null }
+    $needed = @($Records | ForEach-Object $list.ids | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+    if ($null -eq $index -or @($needed | Where-Object { -not $index.ContainsKey($_) }).Count) {
+      $rows = @(& $list.read)
+      $index = New-PilotReferenceIndex $rows $list.key
+      if ($path) {
+        $null = New-Item -ItemType Directory -Force $CacheDir
+        ConvertTo-Json -InputObject $rows -Depth 10 -Compress | Set-Content -LiteralPath $path
+        Write-Log "Pilot  : $($list.name) list read, $($rows.Count) kept"
+      }
+    }
+    $data["$($list.name)s"] = $index
   }
+  [pscustomobject]$data
 }
 
-function Assert-PilotAddress {
-  param([Parameter(Mandatory)]$Address, [string]$Description)
-  foreach ($field in @('address1', 'city', 'state', 'zip')) {
-    if ([string]::IsNullOrWhiteSpace([string]$Address.$field)) {
-      throw "$Description has no $field in Pilot reference data."
-    }
+# a partial address from Pilot still stages: each missing part is marked so dispatch sees what to finish
+function Complete-PilotAddress {
+  param([Parameter(Mandatory)]$Address)
+  if (-not ($Address.address1 -or $Address.city -or $Address.state -or $Address.zip)) { return $Address }
+  foreach ($field in @('address1', 'city', 'zip')) {
+    if ([string]::IsNullOrWhiteSpace([string]$Address.$field)) { $Address.$field = 'MISSING' }
   }
+  if ([string]::IsNullOrWhiteSpace([string]$Address.state)) { $Address.state = '??' }
+  $Address
 }
 
 function ConvertFrom-PilotOrder {
@@ -118,8 +140,8 @@ function ConvertFrom-PilotOrder {
     } else {
       [pscustomobject]@{ address1 = $null; address2 = $null; city = $null; state = $null; zip = $null }
     }
-    if ($terminal) { Assert-PilotAddress $terminalAddress "Pilot terminal $terminalId" }
-    if ($location) { Assert-PilotAddress $locationAddress "Pilot location $locationId" }
+    $terminalAddress = Complete-PilotAddress $terminalAddress
+    $locationAddress = Complete-PilotAddress $locationAddress
 
     $commodityName = if ($item.productName) {
       $item.productName
@@ -217,17 +239,63 @@ function ConvertFrom-PilotOrder {
   }
 }
 
-# the orders to stage: a Pilot status in poll.include_statuses (Scheduled, 2, by default) and a delivery
-# window that ends after it starts. anything else is left for the next run to read again
+# why a Pilot order is not staged this run, or nothing when it is a good load: a status in
+# poll.include_statuses (Scheduled, 2, by default), a delivery window that ends after it starts, and at
+# least one active item, every one with gallons. an order that is not good yet stays in Pilot and is read
+# again next run
+function Get-PilotOrderSkipReason {
+  param([Parameter(Mandatory)]$Record, [int[]]$Include = @(2))
+  if (-not $Record.dispatchOrderId) { return 'no dispatchOrderId' }
+  if ([int]$Record.dispatchOrderStatusTypeId -notin $Include) { return "status $($Record.dispatchOrderStatusTypeId) $($Record.dispatchOrderStatusTypeName)".Trim() }
+  if (-not $Record.deliveryWindowStartDateTime -or -not $Record.deliveryWindowEndDateTime) { return 'no delivery window' }
+  if ([datetime]$Record.deliveryWindowEndDateTime -le [datetime]$Record.deliveryWindowStartDateTime) { return 'delivery window ends before it starts' }
+  $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
+  if (-not $items.Count) { return 'no active items' }
+  $empty = @($items | Where-Object { $null -eq $_.gallons -or [decimal]$_.gallons -le 0 })
+  if ($empty.Count) { return "no gallons on item $(@($empty.dispatchOrderItemId) -join ', ')" }
+}
+
+function Get-PilotIncludeStatuses($Cfg) {
+  @(@(if ($Cfg.poll.include_statuses) { $Cfg.poll.include_statuses } else { 2 }) | ForEach-Object { [int]$_ })
+}
+
 function Select-PilotOrdersToProcess {
   param([Parameter(Mandatory)][AllowEmptyCollection()]$Records, $Cfg)
+  $include = Get-PilotIncludeStatuses $Cfg
+  @($Records) | Where-Object { -not (Get-PilotOrderSkipReason $_ $include) }
+}
 
-  $include = @(@(if ($Cfg.poll.include_statuses) { $Cfg.poll.include_statuses } else { 2 }) | ForEach-Object { [int]$_ })
-  @($Records) | Where-Object {
-    $_.dispatchOrderId -and [int]$_.dispatchOrderStatusTypeId -in $include -and
-      $_.deliveryWindowStartDateTime -and $_.deliveryWindowEndDateTime -and
-      [datetime]$_.deliveryWindowEndDateTime -gt [datetime]$_.deliveryWindowStartDateTime
-  }
+# the order cache: one file per Pilot order in the job's cache folder (settings "cache", default "cache"),
+# the same folder and naming the other order feeds use. staged orders are passed over before anything
+# else; a skipped order keeps its reason, logged again only when the reason changes. a dry run keeps none
+function Get-PilotOrderCacheDir($Cfg) {
+  if ($Cfg.dry_run -or -not $Cfg.directory) { return $null }
+  Join-Path $Cfg.directory $(if ($Cfg.cache) { [string]$Cfg.cache } else { 'cache' })
+}
+
+function Get-PilotOrderCache([string]$CacheDir, $Id) {
+  if (-not $CacheDir) { return $null }
+  $path = Join-Path $CacheDir "$Id.json"
+  if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
+}
+
+function Set-PilotOrderCache([string]$CacheDir, $Id, [string]$State, [string]$Detail) {
+  if (-not $CacheDir) { return }
+  $null = New-Item -ItemType Directory -Force $CacheDir
+  [pscustomobject][ordered]@{
+    dispatch_order_id = [string]$Id; state = $State
+    reason = if ($State -eq 'skipped') { $Detail } else { $null }
+    tmw_order = if ($State -eq 'staged') { $Detail } else { $null }
+    updated_at = [datetime]::UtcNow.ToString('o')
+  } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $CacheDir "$Id.json")
+}
+
+# log a skip only when it is new or its reason changed, so a waiting order is one line, not one a run
+function Skip-PilotOrder([string]$CacheDir, $Id, [string]$Reason) {
+  $cached = Get-PilotOrderCache $CacheDir $Id
+  if ($cached.state -eq 'skipped' -and $cached.reason -eq $Reason) { return }
+  Write-Log "Skipped: $Id, $Reason"
+  Set-PilotOrderCache $CacheDir $Id 'skipped' $Reason
 }
 
 function Receive-PilotOrders {
@@ -239,21 +307,36 @@ function Receive-PilotOrders {
   if ($WindowDays -lt 2) {
     throw "A $WindowDays-day Pilot window can drop loads that cross the boundary. Use 2 or more."
   }
+  $cacheDir = Get-PilotOrderCacheDir $Cfg
+  # an order file untouched for two windows cannot come back from Pilot's read
+  if ($cacheDir -and (Test-Path -LiteralPath $cacheDir)) {
+    Get-ChildItem -LiteralPath $cacheDir -Filter '*.json' -File | Where-Object {
+      $_.Name -notlike 'reference-*' -and $_.LastWriteTime -lt (Get-Date).AddDays(-2 * $WindowDays)
+    } | Remove-Item
+  }
 
   $start = [datetime]::Today
-  $records = Get-PilotOrder -Session $Session -StartDate $start -EndDate $start.AddDays($WindowDays)
-  # Pilot's read has no status filter (probed 2026-09-29), so the filter runs here, before anything else
-  # is fetched; the reference data is read only when an order is left to translate
-  $open = @(Select-PilotOrdersToProcess $records -Cfg $Cfg)
-  Write-Log "Pilot  : $(@($records).Count) orders read, $($open.Count) to stage"
+  $records = @(Get-PilotOrder -Session $Session -StartDate $start -EndDate $start.AddDays($WindowDays))
+  # Pilot's read has no status filter (probed 2026-09-29), so every check that needs only the order
+  # itself runs here, before anything else is read
+  $include = Get-PilotIncludeStatuses $Cfg
+  $open = [Collections.Generic.List[object]]::new()
+  $staged = 0; $skipped = 0
+  foreach ($record in $records) {
+    if ((Get-PilotOrderCache $cacheDir $record.dispatchOrderId).state -eq 'staged') { $staged++; continue }
+    $reason = Get-PilotOrderSkipReason $record $include
+    if ($reason) { Skip-PilotOrder $cacheDir $record.dispatchOrderId $reason; $skipped++; continue }
+    $open.Add($record)
+  }
+  Write-Log "Pilot  : $($records.Count) orders read, $staged already staged, $skipped skipped, $($open.Count) to stage"
   if (-not $open.Count) { return }
-  $references = Get-PilotReferenceData $Session
+  $references = Get-PilotReferenceData $Session $open $cacheDir
 
   foreach ($record in $open) {
     try {
       ConvertFrom-PilotOrder $record -Cfg $Cfg -References $references
     } catch {
-      Write-Warning "Pilot order $($record.dispatchOrderId) deferred: $($_.Exception.Message)"
+      Skip-PilotOrder $cacheDir $record.dispatchOrderId $_.Exception.Message
     }
   }
 }
@@ -378,12 +461,6 @@ function Assert-TmwOrder {
       throw "Pilot order $id stop location '$($stop.locationCode)' must fit TMW varchar(8)."
     }
     if (-not $stop.earliest -or -not $stop.latest) { throw "Pilot order $id has an incomplete stop window." }
-    # a stop with no address at all is for ops to finish in EDI; a partial one is bad data
-    foreach ($field in @('address1', 'city', 'state', 'zip')) {
-      if (($stop.address1 -or $stop.city -or $stop.state -or $stop.zip) -and [string]::IsNullOrWhiteSpace([string]$stop.$field)) {
-        throw "Pilot order $id stop '$($stop.locationCode)' has no $field."
-      }
-    }
     foreach ($field in @(
       @{ name = 'name'; width = 100 }
       @{ name = 'address1'; width = 40 }
@@ -903,6 +980,7 @@ function Send-PilotOrderPlan {
   Write-Log "Stage  : $($orders.Count) order(s), $(if ($commit) { 'commit' } else { 'validate only' })"
   $results = @(Write-TmwOrders -Orders $orders -Cfg $cfg -ConnectionString $cfg.tmw.connection_string -Commit:$commit)
   foreach ($result in $results) {
+    if ($result.ok -and $commit) { Set-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $result.pilot_order_id 'staged' $result.order_number }
     if ($result.ok) { Write-Log ("{0,-7}: {1}: TMW order {2}, state {3}" -f $result.action, $result.pilot_order_id, $result.order_number, $result.edistate) }
     else { Write-Log ("Failed : {0} after {1} attempt(s): {2}" -f $result.pilot_order_id, $result.attempts, $result.error) }
   }

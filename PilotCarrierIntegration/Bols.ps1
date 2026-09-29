@@ -3,7 +3,7 @@
 # The order is decided complete from TMW alone. Every freight line carries its Pilot item id (the OID
 # pil-order staged), so no Pilot read is needed first: a post Kiosks the whole order, which is why an
 # order goes only when every line has its item, BOL, gallons and times. Pilot's answer says whether the
-# order is Kiosked with a BOL on every item; that is the done signal, recorded as a receipt.
+# order is Kiosked with a BOL on every item; that is the done signal, recorded in the cache.
 
 function New-PilotBolPlan {
   param([Parameter(Mandatory)][AllowEmptyCollection()]$TmwRows)
@@ -67,14 +67,14 @@ function New-PilotBolPlan {
   [pscustomobject]@{ ready = @($ready); deferred = @($deferred) }
 }
 
-# one file per Pilot order under the receipts folder: what went, when, and Pilot's answer. a run sends
+# one file per Pilot order in the cache folder (settings "cache", default "cache", like the other order feeds): what went, when, and Pilot's answer. a run sends
 # an order again only when what it would send differs, so the TMW lookback can overlap runs
-function Get-PilotBolDigest($Payload) {
+function Get-PilotBolHash($Payload) {
   $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject @($Payload) -Depth 6 -Compress))
   [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
 }
 
-function Get-PilotBolReceipt([string]$Folder, $DispatchOrderId) {
+function Get-PilotBolCache([string]$Folder, $DispatchOrderId) {
   $path = Join-Path $Folder "$DispatchOrderId.json"
   if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
 }
@@ -107,9 +107,9 @@ function Save-PilotBolPlan {
   $ready = [Collections.Generic.List[object]]::new()
   $sent = [Collections.Generic.List[object]]::new()
   foreach ($item in @($plan.ready)) {
-    $item | Add-Member -NotePropertyName digest -NotePropertyValue (Get-PilotBolDigest $item.payload) -Force
-    $receipt = Get-PilotBolReceipt $Options.Receipts $item.dispatchOrderId
-    if ($receipt -and $receipt.digest -eq $item.digest) { $sent.Add([pscustomobject]@{ item = $item; at = $receipt.sent_at }) } else { $ready.Add($item) }
+    $item | Add-Member -NotePropertyName hash -NotePropertyValue (Get-PilotBolHash $item.payload) -Force
+    $cached = Get-PilotBolCache $Options.Cache $item.dispatchOrderId
+    if ($cached -and $cached.hash -eq $item.hash) { $sent.Add([pscustomobject]@{ item = $item; at = $cached.sent_at }) } else { $ready.Add($item) }
   }
   Write-Log "Orders : $(@($rows | Group-Object tmwOrderId).Count) completed in TMW, $($ready.Count) ready, $(@($plan.deferred).Count) waiting, $($sent.Count) already done"
   foreach ($item in @($plan.deferred)) { Write-Log "Waiting: TMW $($item.tmwOrderId): $($item.reason)" }
@@ -141,11 +141,11 @@ function Send-PilotBolPlan {
     $label = "TMW $($result.batch.tmwOrderId), Pilot $($result.batch.dispatchOrderId), BOL $(@($result.batch.payload.billOfLadingNumber) -join ',')"
     if ($result.error) { Write-Log "Failed : $label`: $($result.error)"; continue }
     if (-not $result.outcome.done) { Write-Log "Not done: $label`: $($result.outcome.note)"; continue }
-    $null = New-Item -ItemType Directory -Force $Options.Receipts
+    $null = New-Item -ItemType Directory -Force $Options.Cache
     [pscustomobject]@{
       sent_at = [datetime]::UtcNow.ToString('o'); tmwOrderId = $result.batch.tmwOrderId; dispatchOrderId = $result.batch.dispatchOrderId
-      digest = $result.batch.digest; pilot = $result.outcome.note; payload = $result.batch.payload
-    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Options.Receipts "$($result.batch.dispatchOrderId).json")
+      hash = $result.batch.hash; pilot = $result.outcome.note; payload = $result.batch.payload
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Options.Cache "$($result.batch.dispatchOrderId).json")
     Write-Log "Sent   : $label, $($result.outcome.note)"
   }
   $failed = @($results | Where-Object error)

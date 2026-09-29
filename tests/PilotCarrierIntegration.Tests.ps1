@@ -69,7 +69,7 @@ Describe 'a BOL run through DataAgent' {
     function Get-PcLog { Get-Content (Join-Path $PcJob ('{0:yyyyMMdd}.log' -f (Get-Date))) | ForEach-Object { ($_ -split "`t")[-1] } }
   }
   BeforeEach {
-    Remove-Item "$PcJob/out", "$PcJob/*.log", "$PcJob/sent" -Recurse -Force -ErrorAction Ignore
+    Remove-Item "$PcJob/out", "$PcJob/*.log", "$PcJob/cache" -Recurse -Force -ErrorAction Ignore
     Set-Location $TestDrive
     $global:PcRows = @(Get-Content "$PSScriptRoot/fixtures/tmw-bols.json" -Raw | ConvertFrom-Json)
     Mock Invoke-Sqlcmd -ModuleName DataAgent { $global:PcRows }
@@ -89,23 +89,23 @@ Describe 'a BOL run through DataAgent' {
     Set-PcSettings
     $config = New-PilotCarrierBolConfig "$PcJob/settings.json"
     $config.dst.args.Pilot.client_secret | Should -Be 'from-env-secret'
-    $config.dst.args.Receipts | Should -Be 'sent'
+    $config.dst.args.Cache | Should -Be 'cache'
   }
   It 'holds back an order already done unchanged, and sends it again once it changes' {
     Set-PcSettings @{ dry_run = $true }
-    $digest = & (Get-Module PilotCarrierIntegration) {
+    $hash = & (Get-Module PilotCarrierIntegration) {
       param($rows)
-      Get-PilotBolDigest ((New-PilotBolPlan -TmwRows $rows).ready | Where-Object dispatchOrderId -eq 12025078).payload
+      Get-PilotBolHash ((New-PilotBolPlan -TmwRows $rows).ready | Where-Object dispatchOrderId -eq 12025078).payload
     } $global:PcRows
-    New-Item -ItemType Directory "$PcJob/sent" | Out-Null
-    @{ sent_at = '2026-09-28T19:40:00Z'; digest = $digest } | ConvertTo-Json | Set-Content "$PcJob/sent/12025078.json"
+    New-Item -ItemType Directory "$PcJob/cache" | Out-Null
+    @{ sent_at = '2026-09-28T19:40:00Z'; hash = $hash } | ConvertTo-Json | Set-Content "$PcJob/cache/12025078.json"
     Invoke-PilotCarrierBols "$PcJob/settings.json"
     $log = Get-PcLog
     $log | Should -Contain 'Orders : 2 completed in TMW, 1 ready, 0 waiting, 1 already done'
     $log | Should -Contain 'Dry run, not sending: Pilot 12024244'
     @($log | Where-Object { $_ -like 'Already: *Pilot 12025078, done *' }).Count | Should -Be 1
 
-    @{ sent_at = '2026-09-28T19:40:00Z'; digest = 'something else' } | ConvertTo-Json | Set-Content "$PcJob/sent/12025078.json"
+    @{ sent_at = '2026-09-28T19:40:00Z'; hash = 'something else' } | ConvertTo-Json | Set-Content "$PcJob/cache/12025078.json"
     Remove-Item "$PcJob/*.log" -Force
     Invoke-PilotCarrierBols "$PcJob/settings.json"
     Get-PcLog | Should -Contain 'Dry run, not sending: Pilot 12025078, Pilot 12024244'

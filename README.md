@@ -36,9 +36,9 @@ The feed's own query returns completed freight, one row per freight line. It nee
 - Ready orders are posted in parallel. An order is done when Pilot answers with it Kiosked (status
   `4`; the status text can be stale) and `allItemsHasBols` true. A post to an order already Kiosked
   is answered the same way, so it is simply done.
-- Each done order leaves a receipt, `sent/<dispatchOrderId>.json` (`receipts` in settings to move
-  it): what was sent, a digest of it, and Pilot's answer. The query's window overlaps runs; an order
-  that matches its receipt is logged `Already:` and not sent again, and a gallons or BOL correction
+- Each done order leaves a file in the cache folder, `cache/<dispatchOrderId>.json` (`cache` in settings
+  to move it), like the other order feeds: what was sent, a hash of it, and Pilot's answer. The query's
+  window overlaps runs; an order that matches its cache file is logged `Already:` and not sent again, and a gallons or BOL correction
   is sent again.
 - An answer that is not done (turned down, or not every item with a BOL) is logged `Not done:` with
   Pilot's answer and tried again next run. The run fails only when Pilot cannot be reached (auth,
@@ -77,14 +77,19 @@ plans and names what would go, and sends nothing.
 Pilot carrier orders -> translate -> stage each one in TMW DataExchange at EDI state 10, for people
 to accept or reject in TMW.
 
-- Orders are read over a rolling window (`poll.window_days`, 30 by default, at least 2). Right after
-  the read (Pilot's read has no status filter), only orders whose status is in `poll.include_statuses`
-  (Scheduled, `2`, by default) and whose delivery window ends after it starts are kept; the rest are
-  read again next run. The reference data is read only when an order is left.
-- Pilot's reference data only fills in names and addresses. TMW maps each stop by its id. A missing
-  terminal, location or contract id stages as `UNKNOWN`; an id the reference data lacks keeps the
-  id. Either way that stop comes over with no address for people to finish in EDI. A partial
-  address, a missing delivery window or no positive gallons still stops the order.
+- Orders are read over a rolling window (`poll.window_days`, 30 by default, at least 2). Pilot's read
+  has no status filter, so one filter runs right after it: a status in `poll.include_statuses`
+  (Scheduled, `2`, by default), a delivery window that ends after it starts, and at least one active
+  item, every one with gallons. An order that fails stays in Pilot and is read again next run.
+- The cache folder (`cache`, default `cache`) keeps one file per Pilot order: `staged` with its TMW
+  order, or `skipped` with the reason. A staged order is passed over before anything else, and a skip
+  reason is logged only when it is new or changes. Files untouched for two windows are removed. A
+  dry run keeps no cache.
+- Pilot's location, terminal and contract lists only fill in names and addresses, and TMW maps each
+  stop by its id. The lists are kept in the cache (`reference-*.json`) and read from Pilot again only
+  when an order names an id the kept copy lacks. A missing id stages as `UNKNOWN`; an id the lists
+  lack keeps the id. Either way that stop comes over with no address for people to finish in EDI. A
+  partial address stages too, each missing part marked `MISSING` (state `??`).
 - One order is one transaction through TMW's own `dx_*` procedures, with a matching DX archive.
   The Pilot id is the key: an order already in TMW logs `EXISTS` and is left alone, changed or not.
 - The SQL checks `db_name()` against `tmw.expected_database` before it writes anything.

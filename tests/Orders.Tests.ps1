@@ -137,10 +137,14 @@ Describe 'Pilot order translation' {
     $command.sql | Should -Not -Match 'declare @city_code\d int'
     $command.sql | Should -Match "rtrim\(s\.cmp_name\) in \('NO TERMINAL', 'NO LOCATION'\)"
   }
-  It 'fails closed on a partial Pilot address' {
+  It 'stages a partial Pilot address with each missing part marked for dispatch' {
     $incomplete = $references | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable
     $incomplete.locations['55979'].address1 = ''
-    { ConvertFrom-PilotOrder $rawOrder $cfg $incomplete } | Should -Throw '*has no address1*'
+    $incomplete.locations['55979'].stateCode = ''
+    $drop = @(@(ConvertFrom-PilotOrder $rawOrder $cfg $incomplete).stops | Where-Object type -eq 'DR')[0]
+    $drop.address1 | Should -Be 'MISSING'
+    $drop.state | Should -Be '??'
+    $drop.city | Should -Not -Be 'MISSING'
   }
   It 'does not second-guess Pilot on an inactive contract' {
     $inactiveContract = $references.contracts['10180'] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
@@ -198,16 +202,22 @@ Describe 'poll window and filtering' {
   It 'refuses a one-day window that can drop straddling loads' {
     { Receive-PilotOrders ([pscustomobject]@{}) $session 1 } | Should -Throw
   }
-  It 'stages only Scheduled orders with a delivery window that ends after it starts' {
-    $w = @{ deliveryWindowStartDateTime = '2026-09-28T12:00:00'; deliveryWindowEndDateTime = '2026-09-28T16:00:00' }
+  It 'stages only good loads: Scheduled, a delivery window, active items all with gallons' {
+    $item = [pscustomobject]@{ dispatchOrderItemId = 7; gallons = 7500; isDeleted = $false }
+    $win = @{ deliveryWindowStartDateTime = '2026-09-28T12:00:00'; deliveryWindowEndDateTime = '2026-09-28T16:00:00' }
+    $w = $win + @{ dispatchOrderItems = @($item) }
     $records = @(
       [pscustomobject](@{ dispatchOrderId = 1; dispatchOrderStatusTypeId = 2 } + $w)
-      [pscustomobject](@{ dispatchOrderId = 2; dispatchOrderStatusTypeId = 4 } + $w)
+      [pscustomobject](@{ dispatchOrderId = 2; dispatchOrderStatusTypeId = 4; dispatchOrderStatusTypeName = 'Kiosked' } + $w)
       [pscustomobject](@{ dispatchOrderId = 3; dispatchOrderStatusTypeId = 1 } + $w)
-      [pscustomobject]@{ dispatchOrderId = 4; dispatchOrderStatusTypeId = 2 }
-      [pscustomobject]@{ dispatchOrderId = 5; dispatchOrderStatusTypeId = 2; deliveryWindowStartDateTime = '2026-09-28T16:00:00'; deliveryWindowEndDateTime = '2026-09-28T12:00:00' }
+      [pscustomobject]@{ dispatchOrderId = 4; dispatchOrderStatusTypeId = 2; dispatchOrderItems = @($item) }
+      [pscustomobject]@{ dispatchOrderId = 5; dispatchOrderStatusTypeId = 2; deliveryWindowStartDateTime = '2026-09-28T16:00:00'; deliveryWindowEndDateTime = '2026-09-28T12:00:00'; dispatchOrderItems = @($item) }
+      [pscustomobject](@{ dispatchOrderId = 6; dispatchOrderStatusTypeId = 2 } + $win + @{ dispatchOrderItems = @() })
+      [pscustomobject](@{ dispatchOrderId = 7; dispatchOrderStatusTypeId = 2 } + $win + @{ dispatchOrderItems = @([pscustomobject]@{ dispatchOrderItemId = 8; gallons = 0; isDeleted = $false }) })
     )
     @(Select-PilotOrdersToProcess $records $cfg).dispatchOrderId | Should -Be @(1)
+    @($records | ForEach-Object { Get-PilotOrderSkipReason $_ @(2) }) | Should -Be @(
+      'status 4 Kiosked', 'status 1', 'no delivery window', 'delivery window ends before it starts', 'no active items', 'no gallons on item 8')
     $cfg2 = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $cfg2.poll.include_statuses = @(1, 2)
     @(Select-PilotOrdersToProcess $records $cfg2).dispatchOrderId | Should -Be @(1, 3)
@@ -220,19 +230,33 @@ Describe 'poll window and filtering' {
       @(Receive-PilotOrders $cfg $session 30).Count | Should -Be 0
       Should -Invoke Get-PilotReferenceData -ModuleName PilotCarrierIntegration -Times 0
   }
-  It 'defers one incomplete order without blocking a valid order' {
+  It 'skips a bad order without blocking a good one, and logs its reason once' {
       $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
       $bad.dispatchOrderId = 999
       $bad.dispatchOrderItems[0].gallons = 0
-      Mock Get-PilotOrder -ModuleName PilotCarrierIntegration -ParameterFilter { $Session -eq $session } { @($bad, $rawOrder) }
+      $cached = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $cached | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'skip-job') -Force
+      Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($bad, $rawOrder) }
       Mock Get-PilotReferenceData -ModuleName PilotCarrierIntegration { $references }
-      Mock Write-Warning -ModuleName PilotCarrierIntegration
-      $received = @(Receive-PilotOrders $cfg $session 30)
+      Mock Write-Log -ModuleName PilotCarrierIntegration
+      $received = @(Receive-PilotOrders $cached $session 30)
       $received.Count | Should -Be 1
       $received[0].pilotOrderId | Should -Be '10877997'
-      Should -Invoke Write-Warning -ModuleName PilotCarrierIntegration -Times 1 -ParameterFilter {
-        $Message -like '*999*deferred*'
-      }
+      @(Receive-PilotOrders $cached $session 30).Count | Should -Be 1
+      Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -Times 1 -Exactly -ParameterFilter { $Message -like 'Skipped: 999, no gallons on item *' }
+      (Get-Content (Join-Path $TestDrive 'skip-job/cache/999.json') -Raw | ConvertFrom-Json).state | Should -Be 'skipped'
+  }
+  It 'passes over an order already staged before reading anything else' {
+      $cached = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $cached | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'staged-job') -Force
+      New-Item -ItemType Directory (Join-Path $TestDrive 'staged-job/cache') -Force | Out-Null
+      @{ dispatch_order_id = '10877997'; state = 'staged'; tmw_order = '10686484' } | ConvertTo-Json | Set-Content (Join-Path $TestDrive 'staged-job/cache/10877997.json')
+      Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($rawOrder) }
+      Mock Get-PilotReferenceData -ModuleName PilotCarrierIntegration { $references }
+      Mock Write-Log -ModuleName PilotCarrierIntegration
+      @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
+      Should -Invoke Get-PilotReferenceData -ModuleName PilotCarrierIntegration -Times 0
+      Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -ParameterFilter { $Message -eq 'Pilot  : 1 orders read, 1 already staged, 0 skipped, 0 to stage' }
   }
 }
 
@@ -392,4 +416,28 @@ Describe 'direct TMW DataExchange staging' {
     (New-TmwOrderCommand $back $cfg -Now $now).sql | Should -Be (New-TmwOrderCommand $canonical $cfg -Now $now).sql
   }
 }
+}
+
+Describe 'reference lists kept in the cache' {
+  BeforeAll {
+    Import-Module "$PSScriptRoot/../PilotCarrierIntegration/PilotCarrierIntegration.psd1" -Force
+  }
+  It 'reads each list once, then again only for an id the kept copy lacks' {
+    InModuleScope PilotCarrierIntegration {
+      $dir = Join-Path $TestDrive 'refcache'
+      Mock Write-Log
+      Mock Get-PilotLocation { @([pscustomobject]@{ locationSystemId = 1; address1 = 'a' }) }
+      Mock Get-PilotTerminal { @([pscustomobject]@{ terminalId = 10 }) }
+      Mock Get-PilotContract { @([pscustomobject]@{ contractSystemId = 20 }) }
+      $order = { param($loc) [pscustomobject]@{ dispatchOrderItems = @([pscustomobject]@{ locationSystemId = $loc; lineOfOperationsSystemId = 10; looSystemId = 20 }) } }
+      $first = Get-PilotReferenceData ([pscustomobject]@{}) @(& $order 1) $dir
+      $first.locations['1'].address1 | Should -Be 'a'
+      $null = Get-PilotReferenceData ([pscustomobject]@{}) @(& $order 1) $dir
+      Should -Invoke Get-PilotLocation -Times 1 -Exactly
+      Should -Invoke Get-PilotTerminal -Times 1 -Exactly
+      $null = Get-PilotReferenceData ([pscustomobject]@{}) @(& $order 2) $dir
+      Should -Invoke Get-PilotLocation -Times 2 -Exactly
+      Should -Invoke Get-PilotTerminal -Times 1 -Exactly
+    }
+  }
 }
