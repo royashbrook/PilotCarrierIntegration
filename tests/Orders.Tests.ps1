@@ -430,6 +430,9 @@ Describe 'reference lists kept in the cache' {
       Mock Get-PilotTerminal { @([pscustomobject]@{ terminalId = 10 }) }
       Mock Get-PilotContract { @([pscustomobject]@{ contractSystemId = 20 }) }
       $order = { param($loc) [pscustomobject]@{ dispatchOrderItems = @([pscustomobject]@{ locationSystemId = $loc; lineOfOperationsSystemId = 10; looSystemId = 20 }) } }
+      # a list kept by 0.5.0: a bare array, no read_at
+      New-Item -ItemType Directory $dir -Force | Out-Null
+      ConvertTo-Json -InputObject @([pscustomobject]@{ locationSystemId = 1; address1 = 'old' }) | Set-Content (Join-Path $dir 'reference-location.json')
       $first = Get-PilotReferenceData ([pscustomobject]@{}) @(& $order 1) $dir
       $first.locations['1'].address1 | Should -Be 'a'
       $null = Get-PilotReferenceData ([pscustomobject]@{}) @(& $order 1) $dir

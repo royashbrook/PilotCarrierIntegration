@@ -30,7 +30,9 @@ function Get-PilotReferenceData {
   foreach ($list in $lists) {
     $path = if ($CacheDir) { Join-Path $CacheDir "reference-$($list.name).json" }
     $kept = if ($path -and (Test-Path -LiteralPath $path)) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
-    $rows = if ($kept.read_at -and ([datetime]$kept.read_at).ToUniversalTime() -gt [datetime]::UtcNow.AddDays(-$KeepDays)) { @($kept.rows) } else { $null }
+    # a list kept by 0.5.0 is a bare array with no read_at: treat it as stale and read it again
+    $readAt = if ($kept -isnot [array]) { $kept.read_at }
+    $rows = if ($readAt -and ([datetime]$readAt).ToUniversalTime() -gt [datetime]::UtcNow.AddDays(-$KeepDays)) { @($kept.rows) } else { $null }
     $index = if ($null -ne $rows) { New-PilotReferenceIndex $rows $list.key } else { $null }
     $needed = @($Records | ForEach-Object $list.ids | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
     if ($null -eq $index -or @($needed | Where-Object { -not $index.ContainsKey($_) }).Count) {
