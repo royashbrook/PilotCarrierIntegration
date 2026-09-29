@@ -47,7 +47,7 @@ function New-PilotCarrierBolConfig {
   $config = @{
     directory = $s.directory
     src = @{ adapter = 'sql'; args = $s.tmw }
-    fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Pilot = $s.pilot; Receipts = $receipts } }
+    fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Receipts = $receipts } }
     dst = if ($s.dry_run) {
       @{ adapter = Get-AdapterPath 'bol-dry-run'; args = @{} }
     } else {

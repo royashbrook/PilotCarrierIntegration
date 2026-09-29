@@ -1,211 +1,74 @@
-# Pilot BOL completions: correlate TMW completed freight to Pilot order items, plan, PUT /bol.
+# Pilot BOL completions: TMW completed freight -> one PUT /bol per order, once every line is complete.
+#
+# The order is decided complete from TMW alone. Every freight line carries its Pilot item id (the OID
+# pil-order staged), so no Pilot read is needed first: a post Kiosks the whole order, which is why an
+# order goes only when every line has its item, BOL, gallons and times. Pilot's answer says whether the
+# order is Kiosked with a BOL on every item; that is the done signal, recorded as a receipt.
 
 function New-PilotBolPlan {
-  param(
-    [Parameter(Mandatory)][AllowEmptyCollection()]$TmwRows,
-    [Parameter(Mandatory)][AllowEmptyCollection()]$PilotOrders,
-    [Parameter(Mandatory)][AllowEmptyCollection()]$AvailableBols
-  )
+  param([Parameter(Mandatory)][AllowEmptyCollection()]$TmwRows)
 
   $ready = [Collections.Generic.List[object]]::new()
   $deferred = [Collections.Generic.List[object]]::new()
 
   foreach ($tmwOrder in @($TmwRows | Group-Object tmwOrderId)) {
     $refs = @($tmwOrder.Group.pilotOrderRef | Where-Object { $_ } | Sort-Object -Unique)
-    if ($refs.Count -ne 1) {
-      $deferred.Add([pscustomobject]@{
-        tmwOrderId = [long]$tmwOrder.Name
-        reason = if ($refs.Count) { 'multiple Pilot PO references' } else { 'no Pilot PO reference' }
-      })
-      continue
-    }
-
     $pilotId = 0L
-    if (-not [long]::TryParse([string]$refs[0], [ref]$pilotId) -or $pilotId -le 0) {
-      $deferred.Add([pscustomobject]@{
-        tmwOrderId = [long]$tmwOrder.Name
-        reason = 'Pilot PO reference is not a positive numeric dispatchOrderId'
-      })
+    $reason = if ($refs.Count -ne 1) { if ($refs.Count) { 'multiple Pilot PO references' } else { 'no Pilot PO reference' } }
+      elseif (-not [long]::TryParse([string]$refs[0], [ref]$pilotId) -or $pilotId -le 0) { 'Pilot PO reference is not a positive numeric dispatchOrderId' }
+    if ($reason) {
+      $deferred.Add([pscustomobject]@{ tmwOrderId = [long]$tmwOrder.Name; reason = $reason })
       continue
     }
 
+    # one row per freight line, first by sequence when the query repeats one
     $rows = @(
       $tmwOrder.Group |
         Group-Object freightId |
         ForEach-Object { @($_.Group | Sort-Object freightSequence)[0] } |
         Sort-Object freightSequence, freightId
     )
-    $freightIds = @($rows.freightId | Sort-Object -Unique)
     $errors = [Collections.Generic.List[string]]::new()
-    $normalized = [Collections.Generic.List[object]]::new()
-    $pilotOrder = @($PilotOrders | Where-Object { [long]$_.dispatchOrderId -eq $pilotId })
-    if ($pilotOrder.Count -ne 1) {
-      $errors.Add("Pilot order correlation found $($pilotOrder.Count) orders")
-    }
-    $expectedItems = if ($pilotOrder.Count -eq 1) {
-      @($pilotOrder[0].dispatchOrderItems | Where-Object { -not $_.isDeleted })
-    } else { @() }
-    if (-not $errors.Count -and $expectedItems.Count -ne $freightIds.Count) {
-      $errors.Add("Pilot expects $($expectedItems.Count) active items; TMW has $($freightIds.Count) freight lines")
-    }
-
-    $usedSourceBols = [Collections.Generic.HashSet[string]]::new()
+    $payload = [Collections.Generic.List[object]]::new()
     foreach ($row in $rows) {
-      $valid = $true
-      $itemId = 0L
-      $bol = 0L
-      if (-not [long]::TryParse([string]$row.bolNumber, [ref]$bol) -or $bol -le 0) {
-        $errors.Add("freight $($row.freightId): invalid BOL")
-        $valid = $false
-      }
-      if ($null -eq $row.grossGallons -or [decimal]$row.grossGallons -le 0) {
-        $errors.Add("freight $($row.freightId): missing gross gallons")
-        $valid = $false
-      }
-      if ($null -eq $row.netGallons -or [decimal]$row.netGallons -le 0) {
-        $errors.Add("freight $($row.freightId): missing net gallons")
-        $valid = $false
-      }
-      if (-not $row.startPullDateTime) {
-        $errors.Add("freight $($row.freightId): missing pull start")
-        $valid = $false
-      }
-      if (-not $row.endPullDateTime) {
-        $errors.Add("freight $($row.freightId): missing pull end")
-        $valid = $false
-      }
-      if (-not $row.dropDateTime) {
-        $errors.Add("freight $($row.freightId): missing drop time")
-        $valid = $false
-      }
-
-      if ([long]::TryParse([string]$row.pilotOrderItemId, [ref]$itemId) -and $itemId -gt 0) {
-        $activeItemIds = @($expectedItems.dispatchOrderItemId | ForEach-Object { [long]$_ })
-        if ($expectedItems.Count -and $itemId -notin $activeItemIds) {
-          $errors.Add("freight $($row.freightId): Pilot order item ID is not active on the order")
-          $valid = $false
-        }
-      } elseif ($valid -and $expectedItems.Count) {
-        $ranked = @($AvailableBols | Where-Object {
-          [long]$_.orderNumber -eq $pilotId -and
-          [long]$_.bolNumber -eq $bol -and
-          -not $usedSourceBols.Contains(('{0}/{1}' -f $_.product360Id, $_.bolNumber))
-        } | ForEach-Object {
-          [pscustomobject]@{
-            source = $_
-            grossDifference = [math]::Abs([decimal]$_.grossGallons - [decimal]$row.grossGallons)
-            netDifference = [math]::Abs([decimal]$_.netGallons - [decimal]$row.netGallons)
-          }
-        } | Where-Object {
-          $_.grossDifference -le 2 -and $_.netDifference -le 2
-        } | Sort-Object @{ Expression = { $_.grossDifference + $_.netDifference } })
-
-        if (-not $ranked.Count) {
-          $errors.Add("freight $($row.freightId): no exact available-BOL product match")
-          $valid = $false
-        } elseif ($ranked.Count -gt 1 -and
-          ($ranked[0].grossDifference + $ranked[0].netDifference) -eq
-          ($ranked[1].grossDifference + $ranked[1].netDifference)) {
-          $errors.Add("freight $($row.freightId): ambiguous available-BOL product match")
-          $valid = $false
-        } else {
-          $source = $ranked[0].source
-          $itemMatches = @($expectedItems | Where-Object {
-            [long]$_.productSystemId -eq [long]$source.product360Id -or
-            [long]$_.wraProductSystemId -eq [long]$source.product360Id
-          })
-          if ($itemMatches.Count -ne 1) {
-            $errors.Add("freight $($row.freightId): product $($source.product360Id) maps to $($itemMatches.Count) Pilot items")
-            $valid = $false
-          } else {
-            $itemId = [long]$itemMatches[0].dispatchOrderItemId
-            [void]$usedSourceBols.Add(('{0}/{1}' -f $source.product360Id, $source.bolNumber))
-          }
-        }
-      } else {
-        $errors.Add("freight $($row.freightId): invalid Pilot order item ID")
-        $valid = $false
-      }
-
-      if ($valid) {
-        $normalized.Add([pscustomobject]@{
-          freightId = [long]$row.freightId
-          freightSequence = [int]$row.freightSequence
-          dispatchOrderItemId = [long]$itemId
-          billOfLadingNumber = [long]$bol
-          grossGallons = [decimal]$row.grossGallons
-          netGallons = [decimal]$row.netGallons
-          startPullDateTime = [datetime]$row.startPullDateTime
-          endPullDateTime = [datetime]$row.endPullDateTime
-          dropDateTime = [datetime]$row.dropDateTime
-          railCarNumber = if ($row.railCarNumber) { [string]$row.railCarNumber } else { $null }
-        })
-      }
+      $itemId = 0L; $bol = 0L
+      $missing = @(
+        if (-not [long]::TryParse([string]$row.pilotOrderItemId, [ref]$itemId) -or $itemId -le 0) { 'Pilot item id (OID)' }
+        if (-not [long]::TryParse([string]$row.bolNumber, [ref]$bol) -or $bol -le 0) { 'BOL' }
+        if ($null -eq $row.grossGallons -or [decimal]$row.grossGallons -le 0) { 'gross gallons' }
+        if ($null -eq $row.netGallons -or [decimal]$row.netGallons -le 0) { 'net gallons' }
+        if (-not $row.startPullDateTime) { 'pull start' }
+        if (-not $row.endPullDateTime) { 'pull end' }
+        if (-not $row.dropDateTime) { 'drop time' }
+      )
+      if ($missing.Count) { $errors.Add("freight $($row.freightId): missing $($missing -join ', ')"); continue }
+      $payload.Add([pscustomobject][ordered]@{
+        grossGallons = [decimal]$row.grossGallons
+        netGallons = [decimal]$row.netGallons
+        billOfLadingNumber = [long]$bol
+        dispatchOrderId = [long]$pilotId
+        dispatchOrderItemId = [long]$itemId
+        dropDateTime = ([datetime]$row.dropDateTime).ToString('yyyy-MM-ddTHH:mm:ss')
+        startPullDateTime = ([datetime]$row.startPullDateTime).ToString('yyyy-MM-ddTHH:mm:ss')
+        endPullDateTime = ([datetime]$row.endPullDateTime).ToString('yyyy-MM-ddTHH:mm:ss')
+        railCarNumber = if ($row.railCarNumber) { [string]$row.railCarNumber } else { $null }
+      })
     }
-
-    $itemIds = @($normalized.dispatchOrderItemId | Sort-Object -Unique)
-    if (-not $errors.Count -and $itemIds.Count -ne $freightIds.Count) {
-      $errors.Add('Pilot order item IDs are not one-to-one with TMW freight lines')
-    }
-    $expectedItemIds = @($expectedItems.dispatchOrderItemId | ForEach-Object { [long]$_ } | Sort-Object -Unique)
-    if (-not $errors.Count -and @($expectedItemIds | Where-Object { $_ -notin $itemIds }).Count) {
-      $errors.Add('Resolved TMW freight does not cover every expected Pilot order item')
+    if (-not $errors.Count -and @($payload.dispatchOrderItemId | Sort-Object -Unique).Count -ne $payload.Count) {
+      $errors.Add('two freight lines carry the same Pilot item id')
     }
     if ($errors.Count) {
-      $deferred.Add([pscustomobject]@{
-        tmwOrderId = [long]$tmwOrder.Name
-        dispatchOrderId = [long]$pilotId
-        reason = (@($errors | Sort-Object -Unique) -join '; ')
-      })
+      $deferred.Add([pscustomobject]@{ tmwOrderId = [long]$tmwOrder.Name; dispatchOrderId = [long]$pilotId; reason = ($errors -join '; ') })
       continue
     }
-
-    $payload = [Collections.Generic.List[object]]::new()
-    foreach ($row in $normalized) {
-      $payload.Add([pscustomobject][ordered]@{
-        grossGallons = $row.grossGallons
-        netGallons = $row.netGallons
-        billOfLadingNumber = $row.billOfLadingNumber
-        dispatchOrderId = [long]$pilotId
-        dispatchOrderItemId = $row.dispatchOrderItemId
-        dropDateTime = $row.dropDateTime.ToString('yyyy-MM-ddTHH:mm:ss')
-        startPullDateTime = $row.startPullDateTime.ToString('yyyy-MM-ddTHH:mm:ss')
-        endPullDateTime = $row.endPullDateTime.ToString('yyyy-MM-ddTHH:mm:ss')
-        railCarNumber = $row.railCarNumber
-      })
-    }
-
-    $ready.Add([pscustomobject]@{
-      key = ('{0}/{1}' -f $pilotId, (@($payload | ForEach-Object {
-        '{0}:{1}' -f $_.dispatchOrderItemId, $_.billOfLadingNumber
-      }) -join ','))
-      tmwOrderId = [long]$tmwOrder.Name
-      dispatchOrderId = [long]$pilotId
-      freightLines = $freightIds.Count
-      payload = @($payload)
-    })
+    $ready.Add([pscustomobject]@{ tmwOrderId = [long]$tmwOrder.Name; dispatchOrderId = [long]$pilotId; payload = @($payload) })
   }
 
-  [pscustomobject]@{
-    ready = @($ready)
-    deferred = @($deferred)
-  }
+  [pscustomobject]@{ ready = @($ready); deferred = @($deferred) }
 }
 
-# Pilot's orders for the carrier, matched to TMW by Pilot id, plus Pilot's available BOLs for the legacy
-# product match. Pilot has no read by id and caps a read at 30 days, so read the last 30: ops can run
-# an order days off its Pilot schedule, and the TMW date says nothing about where Pilot filed it.
-function Get-PilotBolContext {
-  param([Parameter(Mandatory)]$Session)
-  $today = [datetime]::Today
-  [pscustomobject]@{
-    orders = @(Get-PilotOrder -Session $Session -StartDate $today.AddDays(-28) -EndDate $today.AddDays(2))
-    availableBols = @(Get-PilotBol -Session $Session)
-  }
-}
-
-# one file per Pilot order under the receipts folder: what was sent and when. a run resends an order
-# only when what it would send differs, so the TMW lookback can overlap runs without repeating sends
+# one file per Pilot order under the receipts folder: what went, when, and Pilot's answer. a run sends
+# an order again only when what it would send differs, so the TMW lookback can overlap runs
 function Get-PilotBolDigest($Payload) {
   $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject @($Payload) -Depth 6 -Compress))
   [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
@@ -216,24 +79,31 @@ function Get-PilotBolReceipt([string]$Folder, $DispatchOrderId) {
   if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
 }
 
-# one order's completion; Pilot status 4 is the acknowledgement, its status text can be stale
+# one order's completion. done means Pilot answered with the order Kiosked (status 4; its status text can
+# be stale) and a BOL on every item. Pilot turning the post down is an answer, recorded and tried again
+# next run; only not reaching Pilot (auth, throttling, a server error, a timeout) throws.
 function Send-PilotBol {
   param([Parameter(Mandatory)]$Batch, [Parameter(Mandatory)]$Session)
-  $response = Set-PilotBol -Session $Session -Payload $Batch.payload
-  if ($response.status -ne 'success') { throw "Pilot BOL update failed for $($Batch.key): $($response.status)" }
+  try {
+    $response = Set-PilotBol -Session $Session -Payload $Batch.payload
+  } catch {
+    $code = [int]$_.Exception.Response.StatusCode
+    if ($code -lt 400 -or $code -ge 500 -or $code -in 401, 403, 429) { throw }
+    return [pscustomobject]@{ done = $false; note = "turned down, HTTP $code $($_.ErrorDetails.Message)".Trim() }
+  }
   $returned = $response.data.payload
-  if ([long]$returned.dispatchOrderId -ne [long]$Batch.dispatchOrderId) { throw "Pilot BOL response order mismatch for $($Batch.key)." }
-  if ([int]$returned.dispatchOrderStatusTypeId -ne 4) { throw "Pilot BOL response did not Kiosk order $($Batch.dispatchOrderId)." }
-  [int]$returned.dispatchOrderStatusTypeId
+  if ($response.status -ne 'success') { return [pscustomobject]@{ done = $false; note = "turned down: $($response.status)" } }
+  $state = "status $($returned.dispatchOrderStatusTypeId), allItemsHasBols $($returned.allItemsHasBols)"
+  $done = [long]$returned.dispatchOrderId -eq [long]$Batch.dispatchOrderId -and
+    [int]$returned.dispatchOrderStatusTypeId -eq 4 -and $returned.allItemsHasBols -eq $true
+  [pscustomobject]@{ done = $done; note = if ($done) { $state } else { "posted, Pilot shows order $($returned.dispatchOrderId) $state" } }
 }
 
 # DataAgent formatter: TMW rows in, plan file out
 function Save-PilotBolPlan {
   param($Data, [hashtable]$Options)
-  $session = New-PilotCarrierSession $Options.Pilot
   $rows = @($Data)
-  $context = Get-PilotBolContext -Session $session
-  $plan = New-PilotBolPlan -TmwRows $rows -PilotOrders $context.orders -AvailableBols $context.availableBols
+  $plan = New-PilotBolPlan -TmwRows $rows
   $ready = [Collections.Generic.List[object]]::new()
   $sent = [Collections.Generic.List[object]]::new()
   foreach ($item in @($plan.ready)) {
@@ -241,14 +111,15 @@ function Save-PilotBolPlan {
     $receipt = Get-PilotBolReceipt $Options.Receipts $item.dispatchOrderId
     if ($receipt -and $receipt.digest -eq $item.digest) { $sent.Add([pscustomobject]@{ item = $item; at = $receipt.sent_at }) } else { $ready.Add($item) }
   }
-  Write-Log "Orders : $(@($rows | Group-Object tmwOrderId).Count) completed in TMW, $($ready.Count) ready, $(@($plan.deferred).Count) deferred, $($sent.Count) already sent"
+  Write-Log "Orders : $(@($rows | Group-Object tmwOrderId).Count) completed in TMW, $($ready.Count) ready, $(@($plan.deferred).Count) waiting, $($sent.Count) already done"
   foreach ($item in @($plan.deferred)) { Write-Log "Waiting: TMW $($item.tmwOrderId): $($item.reason)" }
-  foreach ($s in $sent) { Write-Log "Already: TMW $($s.item.tmwOrderId), Pilot $($s.item.dispatchOrderId), sent $($s.at), unchanged" }
+  foreach ($s in $sent) { Write-Log "Already: TMW $($s.item.tmwOrderId), Pilot $($s.item.dispatchOrderId), done $($s.at)" }
   $null = New-Item -ItemType Directory -Force (Split-Path $Options.Path)
   [pscustomobject]@{ ready = @($ready); deferred = @($plan.deferred) } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Options.Path
 }
 
-# DataAgent destination: send every ready order, in parallel; failures retry in the next overlapping window
+# DataAgent destination: post every ready order, in parallel. an order Pilot does not finish is logged
+# and goes again next run; the run fails only when Pilot could not be reached
 function Send-PilotBolPlan {
   param([string]$Path, [hashtable]$Options)
   $ready = @((Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json).ready)
@@ -260,24 +131,23 @@ function Send-PilotBolPlan {
   $results = @($ready | ForEach-Object -Parallel {
     $batch = $_
     try {
-      $status = & (Import-Module $using:module -PassThru) { param($b, $s) Send-PilotBol -Batch $b -Session $s } $batch $using:session
-      [pscustomobject]@{ ok = $true; batch = $batch; status = $status; error = $null }
+      $outcome = & (Import-Module $using:module -PassThru) { param($b, $s) Send-PilotBol -Batch $b -Session $s } $batch $using:session
+      [pscustomobject]@{ batch = $batch; outcome = $outcome; error = $null }
     } catch {
-      [pscustomobject]@{ ok = $false; batch = $batch; status = $null; error = $_.Exception.Message }
+      [pscustomobject]@{ batch = $batch; outcome = $null; error = $_.Exception.Message }
     }
   } -ThrottleLimit $throttle)
   foreach ($result in $results) {
-    $bols = @($result.batch.payload.billOfLadingNumber) -join ','
-    if ($result.ok) {
-      $null = New-Item -ItemType Directory -Force $Options.Receipts
-      [pscustomobject]@{
-        sent_at = [datetime]::UtcNow.ToString('o'); tmwOrderId = $result.batch.tmwOrderId; dispatchOrderId = $result.batch.dispatchOrderId
-        digest = $result.batch.digest; payload = $result.batch.payload
-      } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Options.Receipts "$($result.batch.dispatchOrderId).json")
-      Write-Log "Sent   : TMW $($result.batch.tmwOrderId), Pilot $($result.batch.dispatchOrderId), BOL $bols, status $($result.status)"
-    }
-    else { Write-Log "Failed : TMW $($result.batch.tmwOrderId), Pilot $($result.batch.dispatchOrderId): $($result.error)" }
+    $label = "TMW $($result.batch.tmwOrderId), Pilot $($result.batch.dispatchOrderId), BOL $(@($result.batch.payload.billOfLadingNumber) -join ',')"
+    if ($result.error) { Write-Log "Failed : $label`: $($result.error)"; continue }
+    if (-not $result.outcome.done) { Write-Log "Not done: $label`: $($result.outcome.note)"; continue }
+    $null = New-Item -ItemType Directory -Force $Options.Receipts
+    [pscustomobject]@{
+      sent_at = [datetime]::UtcNow.ToString('o'); tmwOrderId = $result.batch.tmwOrderId; dispatchOrderId = $result.batch.dispatchOrderId
+      digest = $result.batch.digest; pilot = $result.outcome.note; payload = $result.batch.payload
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Options.Receipts "$($result.batch.dispatchOrderId).json")
+    Write-Log "Sent   : $label, $($result.outcome.note)"
   }
-  $failed = @($results | Where-Object { -not $_.ok })
-  if ($failed.Count) { throw "$($failed.Count) Pilot BOL request(s) failed; the next run retries them." }
+  $failed = @($results | Where-Object error)
+  if ($failed.Count) { throw "$($failed.Count) Pilot BOL request(s) could not reach Pilot; the next run tries them again." }
 }

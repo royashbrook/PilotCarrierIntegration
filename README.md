@@ -11,10 +11,10 @@ Invoke-PilotCarrierBols "$PSScriptRoot/settings.json"     # or Invoke-PilotCarri
 
 ## BOL completions
 
-TMW completed freight -> correlate to Pilot order items -> Pilot `PUT /bol`.
+TMW completed freight -> one Pilot `PUT /bol` per order, once every line is complete.
 
 The feed's own query returns completed freight, one row per freight line. It needs `tmwOrderId`,
-`pilotOrderRef` (the TMW `PO`, Pilot's `dispatchOrderId`), `orderDate`, `freightId`,
+`pilotOrderRef` (the TMW `PO`, Pilot's `dispatchOrderId`), `freightId`,
 `freightSequence`, `pilotOrderItemId` (the freight `OID`), `bolNumber`, `grossGallons`, `netGallons`,
 `startPullDateTime`, `endPullDateTime`, `dropDateTime` and optionally `railCarNumber`.
 
@@ -27,18 +27,22 @@ The feed's own query returns completed freight, one row per freight line. It nee
 | pickup events | `startPullDateTime`, `endPullDateTime` |
 | delivery event | `dropDateTime` |
 
-- Freight without an `OID` is matched to a Pilot item only through one exact Pilot BOL and product
-  match, within 2 gallons.
-- A whole order waits until every active Pilot item has one unambiguous freight line and BOL.
-- Ready orders are sent in parallel. Pilot status `4` is the acknowledgement; its status text can
-  be stale.
-- Pilot orders are read once per run over the last 30 days (Pilot's longest read; it has no read by
-  id) and matched to TMW by Pilot id, so an order run days off its Pilot schedule still matches.
-- Each sent order leaves a receipt, `sent/<dispatchOrderId>.json` (`receipts` in settings to move
-  it), holding what was sent and a digest of it. The query's window overlaps runs; an order whose
-  payload matches its receipt is logged `Already:` and not sent again, and a changed one (a gallons
-  or BOL correction) is sent again. A failure keeps no receipt, goes again in the next overlapping
-  window, and the run ends red naming it.
+- The order is judged complete from TMW alone: every freight line needs its `OID`, a BOL, gross and
+  net gallons, and pull and drop times, and no two lines may share an `OID`. The `OID` is the key on
+  Pilot's side, so a line without one waits. Until then the order waits, and the log names what is
+  missing.
+- A post Kiosks the whole order (status `4`, even with only one item's BOL), so an order goes once,
+  every line together. There is no Pilot read first.
+- Ready orders are posted in parallel. An order is done when Pilot answers with it Kiosked (status
+  `4`; the status text can be stale) and `allItemsHasBols` true. A post to an order already Kiosked
+  is answered the same way, so it is simply done.
+- Each done order leaves a receipt, `sent/<dispatchOrderId>.json` (`receipts` in settings to move
+  it): what was sent, a digest of it, and Pilot's answer. The query's window overlaps runs; an order
+  that matches its receipt is logged `Already:` and not sent again, and a gallons or BOL correction
+  is sent again.
+- An answer that is not done (turned down, or not every item with a BOL) is logged `Not done:` with
+  Pilot's answer and tried again next run. The run fails only when Pilot cannot be reached (auth,
+  throttling, a server error, a timeout).
 
 ```json
 {
