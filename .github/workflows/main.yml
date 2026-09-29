@@ -13,7 +13,6 @@ jobs:
         shell: pwsh
         run: |
           # the gallery checks RequiredModules against what is installed here
-          Install-Module DataAgent -RequiredVersion 0.5.0 -Scope CurrentUser -Force
-          Install-Module PilotCarrierClient -RequiredVersion 1.0.0 -Scope CurrentUser -Force
-          Install-Module Add-PrefixForLogging -Scope CurrentUser -Force
+          # the manifest is the one list of pins: install exactly what it requires
+          foreach ($r in (Import-PowerShellDataFile ./PilotCarrierIntegration/PilotCarrierIntegration.psd1).RequiredModules) { Install-Module $r.ModuleName -RequiredVersion $r.RequiredVersion -Scope CurrentUser -Force -AcceptLicense }
           Publish-Module -Path 'PilotCarrierIntegration' -NuGetApiKey ${{ secrets.PS_GALLERY_KEY }}
