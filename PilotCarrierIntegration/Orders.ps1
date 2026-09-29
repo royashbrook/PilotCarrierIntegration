@@ -15,9 +15,9 @@ function New-PilotReferenceIndex {
 
 # Pilot's location, terminal and contract lists only fill in names and addresses, and they rarely change.
 # Each list is kept in the cache folder and read from Pilot again only when an order names an id the
-# kept copy lacks. Without a cache folder (a dry run, a test) the lists are read every time.
+# kept copy lacks, or when the kept copy is older than keep_days. Without a cache folder (a dry run, a test) the lists are read every time.
 function Get-PilotReferenceData {
-  param($Session, [AllowEmptyCollection()]$Records = @(), [string]$CacheDir)
+  param($Session, [AllowEmptyCollection()]$Records = @(), [string]$CacheDir, [int]$KeepDays = 7)
   $lists = @(
     @{ name = 'location'; key = 'locationSystemId'; read = { Get-PilotLocation -Session $Session }
       ids = { foreach ($i in $_.dispatchOrderItems) { if ($null -ne $i.locationSystemId) { $i.locationSystemId } else { $i.customerLocationSystemId } } } }
@@ -29,7 +29,8 @@ function Get-PilotReferenceData {
   $data = [ordered]@{}
   foreach ($list in $lists) {
     $path = if ($CacheDir) { Join-Path $CacheDir "reference-$($list.name).json" }
-    $rows = if ($path -and (Test-Path -LiteralPath $path)) { @(Get-Content -LiteralPath $path -Raw | ConvertFrom-Json) } else { $null }
+    $kept = if ($path -and (Test-Path -LiteralPath $path)) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
+    $rows = if ($kept.read_at -and ([datetime]$kept.read_at).ToUniversalTime() -gt [datetime]::UtcNow.AddDays(-$KeepDays)) { @($kept.rows) } else { $null }
     $index = if ($null -ne $rows) { New-PilotReferenceIndex $rows $list.key } else { $null }
     $needed = @($Records | ForEach-Object $list.ids | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
     if ($null -eq $index -or @($needed | Where-Object { -not $index.ContainsKey($_) }).Count) {
@@ -37,7 +38,7 @@ function Get-PilotReferenceData {
       $index = New-PilotReferenceIndex $rows $list.key
       if ($path) {
         $null = New-Item -ItemType Directory -Force $CacheDir
-        ConvertTo-Json -InputObject $rows -Depth 10 -Compress | Set-Content -LiteralPath $path
+        [pscustomobject]@{ read_at = [datetime]::UtcNow.ToString('o'); rows = $rows } | ConvertTo-Json -Depth 10 -Compress | Set-Content -LiteralPath $path
         Write-Log "Pilot  : $($list.name) list read, $($rows.Count) kept"
       }
     }
@@ -255,6 +256,8 @@ function Get-PilotOrderSkipReason {
   if ($empty.Count) { return "no gallons on item $(@($empty.dispatchOrderItemId) -join ', ')" }
 }
 
+function Get-PilotKeepDays($Cfg) { if ($Cfg.keep_days) { [int]$Cfg.keep_days } else { 7 } }
+
 function Get-PilotIncludeStatuses($Cfg) {
   @(@(if ($Cfg.poll.include_statuses) { $Cfg.poll.include_statuses } else { 2 }) | ForEach-Object { [int]$_ })
 }
@@ -308,11 +311,15 @@ function Receive-PilotOrders {
     throw "A $WindowDays-day Pilot window can drop loads that cross the boundary. Use 2 or more."
   }
   $cacheDir = Get-PilotOrderCacheDir $Cfg
-  # an order file untouched for two windows cannot come back from Pilot's read
+  # an order file is kept keep_days (7 by default) after its last update, read from the file itself:
+  # Pilot sends loads a few days out, so an order that old is staged, entered by hand, or gone. one
+  # read again later is only checked again
   if ($cacheDir -and (Test-Path -LiteralPath $cacheDir)) {
-    Get-ChildItem -LiteralPath $cacheDir -Filter '*.json' -File | Where-Object {
-      $_.Name -notlike 'reference-*' -and $_.LastWriteTime -lt (Get-Date).AddDays(-2 * $WindowDays)
-    } | Remove-Item
+    $cutoff = [datetime]::UtcNow.AddDays(-(Get-PilotKeepDays $Cfg))
+    foreach ($file in @(Get-ChildItem -LiteralPath $cacheDir -Filter '*.json' -File | Where-Object Name -notlike 'reference-*')) {
+      $at = (Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json).updated_at
+      if (-not $at -or ([datetime]$at).ToUniversalTime() -lt $cutoff) { Remove-Item -LiteralPath $file.FullName }
+    }
   }
 
   $start = [datetime]::Today
@@ -330,7 +337,7 @@ function Receive-PilotOrders {
   }
   Write-Log "Pilot  : $($records.Count) orders read, $staged already staged, $skipped skipped, $($open.Count) to stage"
   if (-not $open.Count) { return }
-  $references = Get-PilotReferenceData $Session $open $cacheDir
+  $references = Get-PilotReferenceData $Session $open $cacheDir (Get-PilotKeepDays $Cfg)
 
   foreach ($record in $open) {
     try {

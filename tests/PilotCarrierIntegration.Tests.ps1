@@ -98,14 +98,14 @@ Describe 'a BOL run through DataAgent' {
       Get-PilotBolHash ((New-PilotBolPlan -TmwRows $rows).ready | Where-Object dispatchOrderId -eq 12025078).payload
     } $global:PcRows
     New-Item -ItemType Directory "$PcJob/cache" | Out-Null
-    @{ sent_at = '2026-09-28T19:40:00Z'; hash = $hash } | ConvertTo-Json | Set-Content "$PcJob/cache/12025078.json"
+    @{ sent_at = [datetime]::UtcNow.ToString('o'); hash = $hash } | ConvertTo-Json | Set-Content "$PcJob/cache/12025078.json"
     Invoke-PilotCarrierBols "$PcJob/settings.json"
     $log = Get-PcLog
     $log | Should -Contain 'Orders : 2 completed in TMW, 1 ready, 0 waiting, 1 already done'
     $log | Should -Contain 'Dry run, not sending: Pilot 12024244'
     @($log | Where-Object { $_ -like 'Already: *Pilot 12025078, done *' }).Count | Should -Be 1
 
-    @{ sent_at = '2026-09-28T19:40:00Z'; hash = 'something else' } | ConvertTo-Json | Set-Content "$PcJob/cache/12025078.json"
+    @{ sent_at = [datetime]::UtcNow.ToString('o'); hash = 'something else' } | ConvertTo-Json | Set-Content "$PcJob/cache/12025078.json"
     Remove-Item "$PcJob/*.log" -Force
     Invoke-PilotCarrierBols "$PcJob/settings.json"
     Get-PcLog | Should -Contain 'Dry run, not sending: Pilot 12025078, Pilot 12024244'

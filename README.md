@@ -39,7 +39,7 @@ The feed's own query returns completed freight, one row per freight line. It nee
 - Each done order leaves a file in the cache folder, `cache/<dispatchOrderId>.json` (`cache` in settings
   to move it), like the other order feeds: what was sent, a hash of it, and Pilot's answer. The query's
   window overlaps runs; an order that matches its cache file is logged `Already:` and not sent again, and a gallons or BOL correction
-  is sent again.
+  is sent again. A cache file goes `keep_days` (7 by default) after its send.
 - An answer that is not done (turned down, or not every item with a BOL) is logged `Not done:` with
   Pilot's answer and tried again next run. The run fails only when Pilot cannot be reached (auth,
   throttling, a server error, a timeout).
@@ -83,11 +83,11 @@ to accept or reject in TMW.
   item, every one with gallons. An order that fails stays in Pilot and is read again next run.
 - The cache folder (`cache`, default `cache`) keeps one file per Pilot order: `staged` with its TMW
   order, or `skipped` with the reason. A staged order is passed over before anything else, and a skip
-  reason is logged only when it is new or changes. Files untouched for two windows are removed. A
-  dry run keeps no cache.
+  reason is logged only when it is new or changes. An order file goes `keep_days` (7 by default)
+  after its last update, by the date inside it. A dry run keeps no cache.
 - Pilot's location, terminal and contract lists only fill in names and addresses, and TMW maps each
-  stop by its id. The lists are kept in the cache (`reference-*.json`) and read from Pilot again only
-  when an order names an id the kept copy lacks. A missing id stages as `UNKNOWN`; an id the lists
+  stop by its id. The lists are kept in the cache (`reference-*.json`) and read from Pilot again when an order names an id the kept copy lacks, or once the kept
+  copy is older than `keep_days`. A missing id stages as `UNKNOWN`; an id the lists
   lack keeps the id. Either way that stop comes over with no address for people to finish in EDI. A
   partial address stages too, each missing part marked `MISSING` (state `??`).
 - One order is one transaction through TMW's own `dx_*` procedures, with a matching DX archive.

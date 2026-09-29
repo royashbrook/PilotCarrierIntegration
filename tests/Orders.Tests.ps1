@@ -250,7 +250,7 @@ Describe 'poll window and filtering' {
       $cached = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
       $cached | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'staged-job') -Force
       New-Item -ItemType Directory (Join-Path $TestDrive 'staged-job/cache') -Force | Out-Null
-      @{ dispatch_order_id = '10877997'; state = 'staged'; tmw_order = '10686484' } | ConvertTo-Json | Set-Content (Join-Path $TestDrive 'staged-job/cache/10877997.json')
+      @{ dispatch_order_id = '10877997'; state = 'staged'; tmw_order = '10686484'; updated_at = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $TestDrive 'staged-job/cache/10877997.json')
       Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($rawOrder) }
       Mock Get-PilotReferenceData -ModuleName PilotCarrierIntegration { $references }
       Mock Write-Log -ModuleName PilotCarrierIntegration
@@ -438,6 +438,37 @@ Describe 'reference lists kept in the cache' {
       $null = Get-PilotReferenceData ([pscustomobject]@{}) @(& $order 2) $dir
       Should -Invoke Get-PilotLocation -Times 2 -Exactly
       Should -Invoke Get-PilotTerminal -Times 1 -Exactly
+    }
+  }
+}
+
+Describe 'cache lifetimes' {
+  BeforeAll {
+    Import-Module "$PSScriptRoot/../PilotCarrierIntegration/PilotCarrierIntegration.psd1" -Force
+  }
+  It 'drops an order file older than keep_days, by the date inside it' {
+    InModuleScope PilotCarrierIntegration {
+      $job = Join-Path $TestDrive 'life-job'
+      New-Item -ItemType Directory "$job/cache" -Force | Out-Null
+      @{ dispatch_order_id = '1'; state = 'staged'; updated_at = [datetime]::UtcNow.AddDays(-8).ToString('o') } | ConvertTo-Json | Set-Content "$job/cache/1.json"
+      @{ dispatch_order_id = '2'; state = 'staged'; updated_at = [datetime]::UtcNow.AddDays(-6).ToString('o') } | ConvertTo-Json | Set-Content "$job/cache/2.json"
+      Mock Get-PilotOrder { @() }
+      Mock Write-Log
+      $null = Receive-PilotOrders ([pscustomobject]@{ directory = $job; poll = [pscustomobject]@{ window_days = 30 } }) ([pscustomobject]@{}) 30
+      Test-Path "$job/cache/1.json" | Should -BeFalse
+      Test-Path "$job/cache/2.json" | Should -BeTrue
+    }
+  }
+  It 'drops a BOL cache file older than keep_days before planning, so a changed order can go again' {
+    InModuleScope PilotCarrierIntegration {
+      $dir = Join-Path $TestDrive 'bol-cache'
+      New-Item -ItemType Directory $dir -Force | Out-Null
+      @{ sent_at = [datetime]::UtcNow.AddDays(-8).ToString('o'); hash = 'x' } | ConvertTo-Json | Set-Content "$dir/1.json"
+      @{ sent_at = [datetime]::UtcNow.AddDays(-1).ToString('o'); hash = 'y' } | ConvertTo-Json | Set-Content "$dir/2.json"
+      Mock Write-Log
+      Save-PilotBolPlan @() @{ Path = (Join-Path $TestDrive 'bol-out/plan.json'); Cache = $dir; KeepDays = 7 }
+      Test-Path "$dir/1.json" | Should -BeFalse
+      Test-Path "$dir/2.json" | Should -BeTrue
     }
   }
 }

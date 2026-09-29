@@ -47,7 +47,7 @@ function New-PilotCarrierBolConfig {
   $config = @{
     directory = $s.directory
     src = @{ adapter = 'sql'; args = $s.tmw }
-    fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Cache = $cache } }
+    fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Cache = $cache; KeepDays = $(if ($s.dry_run) { 0 } elseif ($s.keep_days) { [int]$s.keep_days } else { 7 }) } }
     dst = if ($s.dry_run) {
       @{ adapter = Get-AdapterPath 'bol-dry-run'; args = @{} }
     } else {
@@ -95,7 +95,7 @@ function New-PilotCarrierDocumentConfig {
     documents = $s.documents
     delivery = @{ adapter = Get-AdapterPath 'doc-send'; args = @{ Pilot = $s.pilot } }
   }
-  foreach ($name in 'receipts', 'dry_run', 'max_sends', 'keepdays', 'purgefiles') { if ($s.ContainsKey($name)) { $agent[$name] = $s[$name] } }
+  foreach ($name in 'receipts', 'keep_days', 'dry_run', 'max_sends', 'keepdays', 'purgefiles') { if ($s.ContainsKey($name)) { $agent[$name] = $s[$name] } }
   $config = New-DocumentAgentConfig $agent
   $config.directory = $s.directory
   $config
