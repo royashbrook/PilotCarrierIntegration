@@ -77,9 +77,10 @@ plans and names what would go, and sends nothing.
 Pilot carrier orders -> translate -> stage each one in TMW DataExchange at EDI state 10, for people
 to accept or reject in TMW.
 
-- Orders are read over a rolling window (`poll.window_days`, 30 by default, at least 2) and orders
-  whose `poll.status_field` is in `poll.skip_values` are dropped, like Kiosked ones, right after the
-  read (Pilot's read has no status filter). The reference data is read only when an order is left.
+- Orders are read over a rolling window (`poll.window_days`, 30 by default, at least 2). Right after
+  the read (Pilot's read has no status filter), only orders whose status is in `poll.include_statuses`
+  (Scheduled, `2`, by default) and whose delivery window ends after it starts are kept; the rest are
+  read again next run. The reference data is read only when an order is left.
 - Pilot's reference data only fills in names and addresses. TMW maps each stop by its id. A missing
   terminal, location or contract id stages as `UNKNOWN`; an id the reference data lacks keeps the
   id. Either way that stop comes over with no address for people to finish in EDI. A partial
@@ -94,7 +95,7 @@ to accept or reject in TMW.
   "keepdays": 10,
   "purgefiles": "*.log",
   "pilot": { "base_url": "env:PILOT_BASE_URL", "...": "as above", "carrier_id": 123 },
-  "poll": { "window_days": 30, "status_field": "dispatchOrderStatusTypeId", "skip_values": [4] },
+  "poll": { "window_days": 30, "include_statuses": [2] },
   "create": { "partner": "PILOT", "billto": "BILLTO", "division": "DIV", "scac": "SCAC" },
   "tmw": {
     "connection_string": "env:TMW_CONNECTION_STRING",

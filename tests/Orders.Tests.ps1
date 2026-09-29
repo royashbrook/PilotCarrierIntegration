@@ -198,14 +198,19 @@ Describe 'poll window and filtering' {
   It 'refuses a one-day window that can drop straddling loads' {
     { Receive-PilotOrders ([pscustomobject]@{}) $session 1 } | Should -Throw
   }
-  It 'skips Kiosked orders and keeps other statuses' {
+  It 'stages only Scheduled orders with a delivery window that ends after it starts' {
+    $w = @{ deliveryWindowStartDateTime = '2026-09-28T12:00:00'; deliveryWindowEndDateTime = '2026-09-28T16:00:00' }
     $records = @(
-      [pscustomobject]@{ dispatchOrderId = 1; dispatchOrderStatusTypeId = 2 }
-      [pscustomobject]@{ dispatchOrderId = 2; dispatchOrderStatusTypeId = 4 }
+      [pscustomobject](@{ dispatchOrderId = 1; dispatchOrderStatusTypeId = 2 } + $w)
+      [pscustomobject](@{ dispatchOrderId = 2; dispatchOrderStatusTypeId = 4 } + $w)
+      [pscustomobject](@{ dispatchOrderId = 3; dispatchOrderStatusTypeId = 1 } + $w)
+      [pscustomobject]@{ dispatchOrderId = 4; dispatchOrderStatusTypeId = 2 }
+      [pscustomobject]@{ dispatchOrderId = 5; dispatchOrderStatusTypeId = 2; deliveryWindowStartDateTime = '2026-09-28T16:00:00'; deliveryWindowEndDateTime = '2026-09-28T12:00:00' }
     )
-    $keep = @(Select-PilotOrdersToProcess $records $cfg)
-    $keep.Count | Should -Be 1
-    $keep[0].dispatchOrderId | Should -Be 1
+    @(Select-PilotOrdersToProcess $records $cfg).dispatchOrderId | Should -Be @(1)
+    $cfg2 = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $cfg2.poll.include_statuses = @(1, 2)
+    @(Select-PilotOrdersToProcess $records $cfg2).dispatchOrderId | Should -Be @(1, 3)
   }
   It 'reads no reference data when every order is Kiosked' {
       $kiosked = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json

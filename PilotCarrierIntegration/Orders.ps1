@@ -217,16 +217,16 @@ function ConvertFrom-PilotOrder {
   }
 }
 
+# the orders to stage: a Pilot status in poll.include_statuses (Scheduled, 2, by default) and a delivery
+# window that ends after it starts. anything else is left for the next run to read again
 function Select-PilotOrdersToProcess {
   param([Parameter(Mandatory)][AllowEmptyCollection()]$Records, $Cfg)
 
-  $field = $Cfg.poll.status_field
-  $skip = @($Cfg.poll.skip_values)
+  $include = @(@(if ($Cfg.poll.include_statuses) { $Cfg.poll.include_statuses } else { 2 }) | ForEach-Object { [int]$_ })
   @($Records) | Where-Object {
-    if (-not $_.dispatchOrderId) { return $false }
-    if ($null -ne $_.kiosked -and [bool]$_.kiosked) { return $false }
-    if ($field -and $skip.Count) { return ($skip -notcontains $_.$field) }
-    $true
+    $_.dispatchOrderId -and [int]$_.dispatchOrderStatusTypeId -in $include -and
+      $_.deliveryWindowStartDateTime -and $_.deliveryWindowEndDateTime -and
+      [datetime]$_.deliveryWindowEndDateTime -gt [datetime]$_.deliveryWindowStartDateTime
   }
 }
 
@@ -242,9 +242,10 @@ function Receive-PilotOrders {
 
   $start = [datetime]::Today
   $records = Get-PilotOrder -Session $Session -StartDate $start -EndDate $start.AddDays($WindowDays)
-  # Pilot's read has no status filter (probed 2026-09-29), so Kiosked orders are dropped here, before
-  # anything else is fetched; the reference data is read only when an order is left to translate
+  # Pilot's read has no status filter (probed 2026-09-29), so the filter runs here, before anything else
+  # is fetched; the reference data is read only when an order is left to translate
   $open = @(Select-PilotOrdersToProcess $records -Cfg $Cfg)
+  Write-Log "Pilot  : $(@($records).Count) orders read, $($open.Count) to stage"
   if (-not $open.Count) { return }
   $references = Get-PilotReferenceData $Session
 
