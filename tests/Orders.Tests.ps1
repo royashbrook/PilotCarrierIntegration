@@ -207,6 +207,14 @@ Describe 'poll window and filtering' {
     $keep.Count | Should -Be 1
     $keep[0].dispatchOrderId | Should -Be 1
   }
+  It 'reads no reference data when every order is Kiosked' {
+      $kiosked = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $kiosked.dispatchOrderStatusTypeId = 4
+      Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($kiosked) }
+      Mock Get-PilotReferenceData -ModuleName PilotCarrierIntegration { $references }
+      @(Receive-PilotOrders $cfg $session 30).Count | Should -Be 0
+      Should -Invoke Get-PilotReferenceData -ModuleName PilotCarrierIntegration -Times 0
+  }
   It 'defers one incomplete order without blocking a valid order' {
       $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
       $bad.dispatchOrderId = 999
@@ -352,13 +360,11 @@ Describe 'direct TMW DataExchange staging' {
     @($command.parameters.value) | Should -Contain '10877997'
     @($command.parameters.value) | Should -Contain 'ULSD #2 W/ 99% BIO'
   }
-  It 'classifies unchanged and changed replays without creating another order' {
+  It 'drops an order already in TMW without touching it' {
     $command.sql | Should -Match 'r.ref_number = @pilot_id'
-    $command.sql | Should -Match '@existing_source_name = @source_name'
     $command.sql | Should -Match 'duplicate TMW orders exist for Pilot order ID'
-    $command.sql | Should -Match 'SKIPPED_UNCHANGED'
-    $command.sql | Should -Match 'REVIEW_CHANGED_PENDING'
-    $command.sql | Should -Match 'REVIEW_CHANGED_LOCKED'
+    $command.sql | Should -Match "@replay_action varchar\(40\) = 'EXISTS'"
+    $command.sql | Should -Not -Match 'REVIEW_'
     $command.sql | Should -Match '@requires_review requires_review'
     $command.sql | Should -Match 'partial Pilot order state exists'
   }

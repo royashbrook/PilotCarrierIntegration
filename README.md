@@ -78,14 +78,14 @@ Pilot carrier orders -> translate -> stage each one in TMW DataExchange at EDI s
 to accept or reject in TMW.
 
 - Orders are read over a rolling window (`poll.window_days`, 30 by default, at least 2) and orders
-  whose `poll.status_field` is in `poll.skip_values` are skipped, like Kiosked ones.
+  whose `poll.status_field` is in `poll.skip_values` are dropped, like Kiosked ones, right after the
+  read (Pilot's read has no status filter). The reference data is read only when an order is left.
 - Pilot's reference data only fills in names and addresses. TMW maps each stop by its id. A missing
   terminal, location or contract id stages as `UNKNOWN`; an id the reference data lacks keeps the
   id. Either way that stop comes over with no address for people to finish in EDI. A partial
   address, a missing delivery window or no positive gallons still stops the order.
 - One order is one transaction through TMW's own `dx_*` procedures, with a matching DX archive.
-  The Pilot id is the idempotency key: an unchanged order is skipped, a changed one is flagged for
-  review instead of overwriting TMW.
+  The Pilot id is the key: an order already in TMW logs `EXISTS` and is left alone, changed or not.
 - The SQL checks `db_name()` against `tmw.expected_database` before it writes anything.
 - Orders stage in parallel (`tmw.max_parallel`) with retries (`tmw.retry_attempts`).
 

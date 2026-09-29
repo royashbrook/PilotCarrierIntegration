@@ -242,9 +242,13 @@ function Receive-PilotOrders {
 
   $start = [datetime]::Today
   $records = Get-PilotOrder -Session $Session -StartDate $start -EndDate $start.AddDays($WindowDays)
+  # Pilot's read has no status filter (probed 2026-09-29), so Kiosked orders are dropped here, before
+  # anything else is fetched; the reference data is read only when an order is left to translate
+  $open = @(Select-PilotOrdersToProcess $records -Cfg $Cfg)
+  if (-not $open.Count) { return }
   $references = Get-PilotReferenceData $Session
 
-  foreach ($record in @(Select-PilotOrdersToProcess $records -Cfg $Cfg)) {
+  foreach ($record in $open) {
     try {
       ConvertFrom-PilotOrder $record -Cfg $Cfg -References $references
     } catch {
@@ -573,13 +577,8 @@ function New-TmwOrderCommand {
     '  begin'
     '    declare @existing_number varchar(12), @existing_state tinyint, @existing_status varchar(6); select @existing_number = rtrim(ord_number), @existing_state = ord_edistate, @existing_status = rtrim(ord_status) from dbo.orderheader where ord_hdrnumber = @existing_hdr;'
     "    declare @existing_fingerprint varchar(64) = case when len(@existing_source_name) = len(@source_prefix) + 65 and left(@existing_source_name, len(@source_prefix) + 1) = @source_prefix + '.' then right(@existing_source_name, 64) end;"
-    '    declare @replay_action varchar(40), @requires_review bit = 0;'
-    "    if @existing_archive_count > 1 select @replay_action = 'REVIEW_MULTIPLE_ARCHIVES', @requires_review = 1;"
-    "    else if @existing_source_name = @source_name select @replay_action = 'SKIPPED_UNCHANGED';"
-    "    else if @existing_fingerprint is null select @replay_action = 'REVIEW_CHANGED_UNFINGERPRINTED', @requires_review = 1;"
-    "    else if @existing_state = 10 select @replay_action = 'REVIEW_CHANGED_PENDING', @requires_review = 1;"
-    "    else if @existing_state in (40, 41, 42, 43, 45) select @replay_action = 'REVIEW_CHANGED_UPDATE_PENDING', @requires_review = 1;"
-    "    else select @replay_action = 'REVIEW_CHANGED_LOCKED', @requires_review = 1;"
+    # an order already in TMW is left alone: once created, Pilot changes are not carried over
+    "    declare @replay_action varchar(40) = 'EXISTS', @requires_review bit = 0;"
     '    commit transaction;'
     "    select cast(1 as bit) ok, @replay_action action, @requires_review requires_review, @pilot_id pilot_order_id, @existing_hdr order_hdrnumber, @existing_number order_number, @existing_archive archive_header_id, @existing_state edistate, @existing_status order_status, 0 detail_rows, @fingerprint incoming_fingerprint, @existing_fingerprint existing_fingerprint, db_name() database_name;"
     '    return;'
@@ -903,8 +902,7 @@ function Send-PilotOrderPlan {
   Write-Log "Stage  : $($orders.Count) order(s), $(if ($commit) { 'commit' } else { 'validate only' })"
   $results = @(Write-TmwOrders -Orders $orders -Cfg $cfg -ConnectionString $cfg.tmw.connection_string -Commit:$commit)
   foreach ($result in $results) {
-    if ($result.requires_review) { Write-Log ("Review : {0} {1}: TMW order {2}, status {3}, state {4}" -f $result.pilot_order_id, $result.action, $result.order_number, $result.order_status, $result.edistate) }
-    elseif ($result.ok) { Write-Log ("{0,-7}: {1}: TMW order {2}, state {3}" -f $result.action, $result.pilot_order_id, $result.order_number, $result.edistate) }
+    if ($result.ok) { Write-Log ("{0,-7}: {1}: TMW order {2}, state {3}" -f $result.action, $result.pilot_order_id, $result.order_number, $result.edistate) }
     else { Write-Log ("Failed : {0} after {1} attempt(s): {2}" -f $result.pilot_order_id, $result.attempts, $result.error) }
   }
   $failed = @($results | Where-Object { -not $_.ok })
