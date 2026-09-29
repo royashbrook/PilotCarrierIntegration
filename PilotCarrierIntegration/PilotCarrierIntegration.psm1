@@ -42,14 +42,16 @@ function New-PilotCarrierBolConfig {
   [CmdletBinding()]
   param([Parameter(Mandatory, Position = 0)][string]$Settings)
   $s = Read-PilotCarrierSettings $Settings
+  # a receipt per Pilot order sent, in the job folder, committed with the log
+  $receipts = if ($s.receipts) { $s.receipts } else { 'sent' }
   $config = @{
     directory = $s.directory
     src = @{ adapter = 'sql'; args = $s.tmw }
-    fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Pilot = $s.pilot } }
+    fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Pilot = $s.pilot; Receipts = $receipts } }
     dst = if ($s.dry_run) {
       @{ adapter = Get-AdapterPath 'bol-dry-run'; args = @{} }
     } else {
-      @{ adapter = Get-AdapterPath 'bol-send'; args = @{ Pilot = $s.pilot; ThrottleLimit = $s.throttle_limit } }
+      @{ adapter = Get-AdapterPath 'bol-send'; args = @{ Pilot = $s.pilot; ThrottleLimit = $s.throttle_limit; Receipts = $receipts } }
     }
   }
   foreach ($name in 'keepdays', 'purgefiles') { if ($s.ContainsKey($name)) { $config[$name] = $s[$name] } }

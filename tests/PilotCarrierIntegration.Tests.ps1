@@ -136,12 +136,40 @@ Describe 'a BOL run through DataAgent' {
     Mock New-PilotSession -ModuleName PilotCarrierIntegration { [pscustomobject]@{ BaseUrl = $BaseUrl; Secret = $Credential.GetNetworkCredential().Password } }
     Invoke-PilotCarrierBols "$PcJob/settings.json"
     $log = Get-PcLog
-    $log | Should -Contain 'Orders : 2 completed in TMW, 2 ready, 0 deferred'
+    $log | Should -Contain 'Orders : 2 completed in TMW, 2 ready, 0 deferred, 0 already sent'
     $log | Should -Contain 'Dry run, not sending: Pilot 12025078, Pilot 12024244'
     $log | Should -Contain 'End'
     Should -Invoke New-PilotSession -ModuleName PilotCarrierIntegration -ParameterFilter { $Credential.GetNetworkCredential().Password -eq 'from-env-secret' }
     Should -Invoke Invoke-Sqlcmd -ModuleName DataAgent -Times 1 -Exactly -ParameterFilter { $InputFile -eq 'get-data.sql' -and @($Variable) -contains 'LookbackMinutes=120' }
     Test-Path "$TestDrive/out" | Should -BeFalse
+  }
+  It 'reads the last 30 days of Pilot orders once, whatever dates TMW has' {
+    Set-PcSettings @{ dry_run = $true }
+    Invoke-PilotCarrierBols "$PcJob/settings.json"
+    Should -Invoke Get-PilotOrder -ModuleName PilotCarrierIntegration -Times 1 -Exactly -ParameterFilter {
+      $StartDate -eq [datetime]::Today.AddDays(-28) -and $EndDate -eq [datetime]::Today.AddDays(2)
+    }
+  }
+  It 'holds back an order already sent unchanged, and sends it again once it changes' {
+    Set-PcSettings @{ dry_run = $true }
+    Remove-Item "$PcJob/sent" -Recurse -Force -ErrorAction Ignore
+    $digest = & (Get-Module PilotCarrierIntegration) {
+      param($rows)
+      $plan = New-PilotBolPlan -TmwRows $rows -PilotOrders @(Get-PilotOrder -Session 1 -StartDate 1/1/2026 -EndDate 1/2/2026) -AvailableBols @()
+      Get-PilotBolDigest ($plan.ready | Where-Object dispatchOrderId -eq 12025078).payload
+    } $global:PcRows
+    New-Item -ItemType Directory "$PcJob/sent" | Out-Null
+    @{ sent_at = '2026-09-28T19:40:00Z'; digest = $digest } | ConvertTo-Json | Set-Content "$PcJob/sent/12025078.json"
+    Invoke-PilotCarrierBols "$PcJob/settings.json"
+    $log = Get-PcLog
+    $log | Should -Contain 'Orders : 2 completed in TMW, 1 ready, 0 deferred, 1 already sent'
+    $log | Should -Contain 'Dry run, not sending: Pilot 12024244'
+    @($log | Where-Object { $_ -like 'Already: *Pilot 12025078, sent *, unchanged' }).Count | Should -Be 1
+
+    @{ sent_at = '2026-09-28T19:40:00Z'; digest = 'something else' } | ConvertTo-Json | Set-Content "$PcJob/sent/12025078.json"
+    Remove-Item "$PcJob/*.log" -Force
+    Invoke-PilotCarrierBols "$PcJob/settings.json"
+    Get-PcLog | Should -Contain 'Dry run, not sending: Pilot 12025078, Pilot 12024244'
   }
   It 'logs the idle marker when TMW has no completions' {
     Set-PcSettings @{ dry_run = $true }

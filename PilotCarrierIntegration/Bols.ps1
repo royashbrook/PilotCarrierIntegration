@@ -192,18 +192,28 @@ function New-PilotBolPlan {
   }
 }
 
-# Pilot orders around each TMW order date, plus Pilot's available BOLs for the legacy product match
+# Pilot's orders for the carrier, matched to TMW by Pilot id, plus Pilot's available BOLs for the legacy
+# product match. Pilot has no read by id and caps a read at 30 days, so read the last 30: ops can run
+# an order days off its Pilot schedule, and the TMW date says nothing about where Pilot filed it.
 function Get-PilotBolContext {
-  param([Parameter(Mandatory)][AllowEmptyCollection()]$TmwRows, [Parameter(Mandatory)]$Session)
-  $ordersById = @{}
-  $dates = @($TmwRows.orderDate | Where-Object { $_ } | ForEach-Object { ([datetime]$_).Date } | Sort-Object -Unique)
-  if (-not $dates.Count) { throw 'TMW BOL candidates have no order dates for Pilot correlation.' }
-  foreach ($date in $dates) {
-    foreach ($order in @(Get-PilotOrder -Session $Session -StartDate $date.AddDays(-1) -EndDate $date.AddDays(2))) {
-      $ordersById[[string]$order.dispatchOrderId] = $order
-    }
+  param([Parameter(Mandatory)]$Session)
+  $today = [datetime]::Today
+  [pscustomobject]@{
+    orders = @(Get-PilotOrder -Session $Session -StartDate $today.AddDays(-28) -EndDate $today.AddDays(2))
+    availableBols = @(Get-PilotBol -Session $Session)
   }
-  [pscustomobject]@{ orders = @($ordersById.Values); availableBols = @(Get-PilotBol -Session $Session) }
+}
+
+# one file per Pilot order under the receipts folder: what was sent and when. a run resends an order
+# only when what it would send differs, so the TMW lookback can overlap runs without repeating sends
+function Get-PilotBolDigest($Payload) {
+  $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject @($Payload) -Depth 6 -Compress))
+  [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
+}
+
+function Get-PilotBolReceipt([string]$Folder, $DispatchOrderId) {
+  $path = Join-Path $Folder "$DispatchOrderId.json"
+  if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
 }
 
 # one order's completion; Pilot status 4 is the acknowledgement, its status text can be stale
@@ -222,12 +232,20 @@ function Save-PilotBolPlan {
   param($Data, [hashtable]$Options)
   $session = New-PilotCarrierSession $Options.Pilot
   $rows = @($Data)
-  $context = Get-PilotBolContext -TmwRows $rows -Session $session
+  $context = Get-PilotBolContext -Session $session
   $plan = New-PilotBolPlan -TmwRows $rows -PilotOrders $context.orders -AvailableBols $context.availableBols
-  Write-Log "Orders : $(@($rows | Group-Object tmwOrderId).Count) completed in TMW, $(@($plan.ready).Count) ready, $(@($plan.deferred).Count) deferred"
+  $ready = [Collections.Generic.List[object]]::new()
+  $sent = [Collections.Generic.List[object]]::new()
+  foreach ($item in @($plan.ready)) {
+    $item | Add-Member -NotePropertyName digest -NotePropertyValue (Get-PilotBolDigest $item.payload) -Force
+    $receipt = Get-PilotBolReceipt $Options.Receipts $item.dispatchOrderId
+    if ($receipt -and $receipt.digest -eq $item.digest) { $sent.Add([pscustomobject]@{ item = $item; at = $receipt.sent_at }) } else { $ready.Add($item) }
+  }
+  Write-Log "Orders : $(@($rows | Group-Object tmwOrderId).Count) completed in TMW, $($ready.Count) ready, $(@($plan.deferred).Count) deferred, $($sent.Count) already sent"
   foreach ($item in @($plan.deferred)) { Write-Log "Waiting: TMW $($item.tmwOrderId): $($item.reason)" }
+  foreach ($s in $sent) { Write-Log "Already: TMW $($s.item.tmwOrderId), Pilot $($s.item.dispatchOrderId), sent $($s.at), unchanged" }
   $null = New-Item -ItemType Directory -Force (Split-Path $Options.Path)
-  [pscustomobject]@{ ready = @($plan.ready); deferred = @($plan.deferred) } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Options.Path
+  [pscustomobject]@{ ready = @($ready); deferred = @($plan.deferred) } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Options.Path
 }
 
 # DataAgent destination: send every ready order, in parallel; failures retry in the next overlapping window
@@ -250,7 +268,14 @@ function Send-PilotBolPlan {
   } -ThrottleLimit $throttle)
   foreach ($result in $results) {
     $bols = @($result.batch.payload.billOfLadingNumber) -join ','
-    if ($result.ok) { Write-Log "Sent   : TMW $($result.batch.tmwOrderId), Pilot $($result.batch.dispatchOrderId), BOL $bols, status $($result.status)" }
+    if ($result.ok) {
+      $null = New-Item -ItemType Directory -Force $Options.Receipts
+      [pscustomobject]@{
+        sent_at = [datetime]::UtcNow.ToString('o'); tmwOrderId = $result.batch.tmwOrderId; dispatchOrderId = $result.batch.dispatchOrderId
+        digest = $result.batch.digest; payload = $result.batch.payload
+      } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Options.Receipts "$($result.batch.dispatchOrderId).json")
+      Write-Log "Sent   : TMW $($result.batch.tmwOrderId), Pilot $($result.batch.dispatchOrderId), BOL $bols, status $($result.status)"
+    }
     else { Write-Log "Failed : TMW $($result.batch.tmwOrderId), Pilot $($result.batch.dispatchOrderId): $($result.error)" }
   }
   $failed = @($results | Where-Object { -not $_.ok })

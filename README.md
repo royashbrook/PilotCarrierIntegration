@@ -32,9 +32,13 @@ The feed's own query returns completed freight, one row per freight line. It nee
 - A whole order waits until every active Pilot item has one unambiguous freight line and BOL.
 - Ready orders are sent in parallel. Pilot status `4` is the acknowledgement; its status text can
   be stale.
-- Every run sends the current snapshot of the query's window. Replays are expected and harmless.
-  There is no in-run retry or sent ledger: a failure goes again in the next overlapping window, and
-  the run ends red naming it.
+- Pilot orders are read once per run over the last 30 days (Pilot's longest read; it has no read by
+  id) and matched to TMW by Pilot id, so an order run days off its Pilot schedule still matches.
+- Each sent order leaves a receipt, `sent/<dispatchOrderId>.json` (`receipts` in settings to move
+  it), holding what was sent and a digest of it. The query's window overlaps runs; an order whose
+  payload matches its receipt is logged `Already:` and not sent again, and a changed one (a gallons
+  or BOL correction) is sent again. A failure keeps no receipt, goes again in the next overlapping
+  window, and the run ends red naming it.
 
 ```json
 {
