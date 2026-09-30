@@ -1,6 +1,6 @@
 @{
   RootModule = 'PilotCarrierIntegration.psm1'
-  ModuleVersion = '0.6.0'
+  ModuleVersion = '0.7.0'
   GUID = '393f77b8-b11b-4369-ad42-227e1ac0e79f'
   Author = 'Roy Ashbrook'
   CompanyName = 'ashbrook.io'
@@ -9,7 +9,7 @@
   PowerShellVersion = '7.4'
   RequiredModules = @(
     @{ ModuleName = 'DataAgent'; RequiredVersion = '0.5.0' }
-    @{ ModuleName = 'DocumentAgent'; RequiredVersion = '0.5.0' }
+    @{ ModuleName = 'DocumentAgent'; RequiredVersion = '0.5.1' }
     @{ ModuleName = 'PilotCarrierClient'; RequiredVersion = '1.0.0' }
     @{ ModuleName = 'Add-PrefixForLogging'; RequiredVersion = '1.0.0.3' }
   )

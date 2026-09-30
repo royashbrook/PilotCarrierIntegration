@@ -17,7 +17,7 @@ function New-PilotBolPlan {
     $reason = if ($refs.Count -ne 1) { if ($refs.Count) { 'multiple Pilot PO references' } else { 'no Pilot PO reference' } }
       elseif (-not [long]::TryParse([string]$refs[0], [ref]$pilotId) -or $pilotId -le 0) { 'Pilot PO reference is not a positive numeric dispatchOrderId' }
     if ($reason) {
-      $deferred.Add([pscustomobject]@{ tmwOrderId = [long]$tmwOrder.Name; reason = $reason })
+      $deferred.Add([pscustomobject]@{ tmwOrderId = [long]$tmwOrder.Name; dispatchOrderId = $null; reason = $reason })
       continue
     }
 
@@ -64,12 +64,27 @@ function New-PilotBolPlan {
     $ready.Add([pscustomobject]@{ tmwOrderId = [long]$tmwOrder.Name; dispatchOrderId = [long]$pilotId; payload = @($payload) })
   }
 
-  [pscustomobject]@{ ready = @($ready); deferred = @($deferred) }
+  # one Pilot order on two TMW orders would be two posts to one Pilot record, each Kiosking it with only its
+  # own lines, so every TMW order sharing a Pilot id waits for a person
+  foreach ($shared in @(@($ready) + @($deferred) | Where-Object dispatchOrderId | Group-Object dispatchOrderId | Where-Object Count -gt 1)) {
+    foreach ($item in @($shared.Group)) {
+      $others = @($shared.Group | Where-Object { $_ -ne $item } | ForEach-Object { "TMW $($_.tmwOrderId)" }) -join ', '
+      $reason = "Pilot order $($shared.Name) is also on $others"
+      if ($ready.Contains($item)) {
+        $null = $ready.Remove($item)
+        $deferred.Add([pscustomobject]@{ tmwOrderId = $item.tmwOrderId; dispatchOrderId = $item.dispatchOrderId; reason = $reason })
+      } else {
+        $item.reason = "$($item.reason); $reason"
+      }
+    }
+  }
+
+  [pscustomobject]@{ ready = @($ready); deferred = @($deferred | Sort-Object tmwOrderId) }
 }
 
 # one file per Pilot order in the cache folder (settings "cache", default "cache", like the other order feeds): what goes, its state,
-# and Pilot's answer. an order is written there as pending before it is posted and marked done when Pilot finishes it. one done
-# goes again only when what it would send changes
+# and Pilot's answer. an order is written there as pending before it is posted, with its TMW rows, and marked done when Pilot
+# finishes it. one done goes again only when what it would send changes
 function Get-PilotBolHash($Payload) {
   $bytes = [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject @($Payload) -Depth 6 -Compress))
   [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
@@ -77,7 +92,8 @@ function Get-PilotBolHash($Payload) {
 
 function Get-PilotBolCache([string]$Folder, $DispatchOrderId) {
   $path = Join-Path $Folder "$DispatchOrderId.json"
-  if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
+  # times stay the strings they were written as, so a file read and written again is the same file
+  if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -DateKind String }
 }
 
 # the order files, not the cursor
@@ -88,16 +104,20 @@ function Get-PilotBolCacheFiles([string]$Folder) {
 # a file from before states is an order done
 function Test-PilotBolPending($Cached) { $Cached -and $Cached.state -eq 'pending' }
 
-# the TMW time the next run reads from, like gravitate's cursor, so a run missed for any length of time loses nothing. it stops at
-# the oldest order still pending, so the query keeps returning that order and it goes again; an order held for missing data comes
-# back when TMW changes it
-function Get-PilotBolCursor([string]$Folder) {
-  $path = Join-Path $Folder 'cursor.json'
-  if (Test-Path -LiteralPath $path) { Format-TmwTime (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).since }
+function Write-PilotBolCache([string]$Folder, $Entry) {
+  $null = New-Item -ItemType Directory -Force $Folder
+  $Entry | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Folder "$($Entry.dispatchOrderId).json")
 }
 
 # TMW times have no zone and json reads them back as dates, so they are written one way, to the millisecond
 function Format-TmwTime($Value) { if ($Value -is [datetime]) { $Value.ToString('yyyy-MM-ddTHH:mm:ss.fff') } else { $Value } }
+
+# the TMW time the next run reads from, like gravitate's cursor, so a run missed for any length of time loses nothing. it
+# only moves forward. an order held for missing data comes back when TMW changes it
+function Get-PilotBolCursor([string]$Folder) {
+  $path = Join-Path $Folder 'cursor.json'
+  if (Test-Path -LiteralPath $path) { Format-TmwTime (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).since }
+}
 
 function Set-PilotBolCursor([string]$Folder, $Since) {
   $Since = Format-TmwTime $Since
@@ -108,9 +128,30 @@ function Set-PilotBolCursor([string]$Folder, $Since) {
   [pscustomobject]@{ since = $Since; updated_at = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Folder 'cursor.json')
 }
 
-function Write-PilotBolCache([string]$Folder, $Entry) {
-  $null = New-Item -ItemType Directory -Force $Folder
-  $Entry | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Folder "$($Entry.dispatchOrderId).json")
+# DataAgent source: TMW completed freight from the feed's query, plus the orders still pending from earlier runs, read again
+# from their cache files so they go again whatever the query returns. a done file is kept keep_days (2 by default, like
+# gravitate's finished orders) after its send; a pending one keep_days after it was first staged, then dropped, and says so
+function Read-PilotBolRows {
+  param([hashtable]$Options)
+  # the query runs through DataAgent's own sql source, then the rows become plain objects so they can be cached
+  $rows = @(& (Join-Path (Get-Module DataAgent).ModuleBase 'src/sql.ps1') -Data @() -Options $Options.Tmw)
+  if ($rows.Count -and $rows[0] -is [Data.DataRow]) { $rows = @($rows | Select-Object $rows[0].Table.Columns.ColumnName) }
+  $cutoff = if ($Options.KeepDays -gt 0) { [datetime]::UtcNow.AddDays(-$Options.KeepDays) }
+  $read = @($rows | ForEach-Object { [long]$_.tmwOrderId })
+  foreach ($file in @(Get-PilotBolCacheFiles $Options.Cache)) {
+    $cached = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -DateKind String
+    $pending = Test-PilotBolPending $cached
+    $at = if ($pending) { $cached.staged_at } else { $cached.sent_at }
+    if ($cutoff -and (-not $at -or ([datetime]$at).ToUniversalTime() -lt $cutoff)) {
+      if ($pending) { Write-Log "Dropped: TMW $($cached.tmwOrderId), Pilot $($cached.dispatchOrderId), pending since $($cached.staged_at), last: $($cached.pilot)" }
+      Remove-Item -LiteralPath $file.FullName
+      continue
+    }
+    if (-not $pending -or [long]$cached.tmwOrderId -in $read) { continue }
+    Write-Log "Pending: TMW $($cached.tmwOrderId), Pilot $($cached.dispatchOrderId), staged $($cached.staged_at), read again from the cache"
+    $rows += @($cached.rows)
+  }
+  $rows
 }
 
 # one order's completion. done means Pilot answered with the order Kiosked (status 4; its status text can
@@ -136,27 +177,15 @@ function Send-PilotBol {
 # DataAgent formatter: TMW rows in, plan file out
 function Save-PilotBolPlan {
   param($Data, [hashtable]$Options)
-  # an order file is kept keep_days (2 by default, like gravitate's finished orders): a done order from its send, a pending one
-  # from when it was first staged, after which it stops going and says so
-  if ($Options.KeepDays -gt 0) {
-    $cutoff = [datetime]::UtcNow.AddDays(-$Options.KeepDays)
-    foreach ($file in @(Get-PilotBolCacheFiles $Options.Cache)) {
-      $cached = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
-      $at = if (Test-PilotBolPending $cached) { $cached.staged_at } else { $cached.sent_at }
-      if ($at -and ([datetime]$at).ToUniversalTime() -ge $cutoff) { continue }
-      if (Test-PilotBolPending $cached) { Write-Log "Dropped: TMW $($cached.tmwOrderId), Pilot $($cached.dispatchOrderId), pending since $($cached.staged_at), last: $($cached.pilot)" }
-      Remove-Item -LiteralPath $file.FullName
-    }
-  }
   $rows = @($Data)
   $plan = New-PilotBolPlan -TmwRows $rows
   $ready = [Collections.Generic.List[object]]::new()
   $sent = [Collections.Generic.List[object]]::new()
-  $touched = @{}
-  foreach ($group in @($rows | Group-Object tmwOrderId)) { $touched[$group.Name] = Format-TmwTime @($group.Group.sourceUpdatedAt | Where-Object { $_ } | ForEach-Object { [datetime]$_ } | Sort-Object)[-1] }
   foreach ($item in @($plan.ready)) {
+    $own = @($rows | Where-Object { [long]$_.tmwOrderId -eq $item.tmwOrderId })
     $item | Add-Member -NotePropertyName hash -NotePropertyValue (Get-PilotBolHash $item.payload) -Force
-    $item | Add-Member -NotePropertyName sourceUpdatedAt -NotePropertyValue $touched["$($item.tmwOrderId)"] -Force
+    $item | Add-Member -NotePropertyName sourceUpdatedAt -NotePropertyValue (Format-TmwTime @($own.sourceUpdatedAt | Where-Object { $_ } | ForEach-Object { [datetime]$_ } | Sort-Object)[-1]) -Force
+    $item | Add-Member -NotePropertyName rows -NotePropertyValue $own -Force
     $cached = Get-PilotBolCache $Options.Cache $item.dispatchOrderId
     if ($cached -and $cached.hash -eq $item.hash -and -not (Test-PilotBolPending $cached)) { $sent.Add([pscustomobject]@{ item = $item; at = $cached.sent_at }) } else { $ready.Add($item) }
   }
@@ -183,7 +212,8 @@ function Send-PilotBolPlan {
     $entry = [ordered]@{
       state = 'pending'; tmwOrderId = $batch.tmwOrderId; dispatchOrderId = $batch.dispatchOrderId; hash = $batch.hash
       staged_at = if ((Test-PilotBolPending $cached) -and $cached.hash -eq $batch.hash) { $cached.staged_at } else { [datetime]::UtcNow.ToString('o') }
-      sent_at = $null; pilot = if (Test-PilotBolPending $cached) { $cached.pilot }; sourceUpdatedAt = $batch.sourceUpdatedAt; payload = @($batch.payload)
+      sent_at = $null; pilot = if (Test-PilotBolPending $cached) { $cached.pilot }; sourceUpdatedAt = Format-TmwTime $batch.sourceUpdatedAt
+      rows = @($batch.rows); payload = @($batch.payload)
     }
     Write-PilotBolCache $Options.Cache ([pscustomobject]$entry)
     $staged["$($batch.dispatchOrderId)"] = $entry
@@ -225,9 +255,8 @@ function Send-PilotBolPlan {
     Write-Log 'Nothing ready to send'
   }
 
-  $pending = @(Get-PilotBolCacheFiles $Options.Cache | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } | Where-Object { Test-PilotBolPending $_ })
+  Set-PilotBolCursor $Options.Cache $plan.cursor
+  $pending = @(Get-PilotBolCacheFiles $Options.Cache | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -DateKind String } | Where-Object { Test-PilotBolPending $_ })
   $oldest = @($pending.staged_at | Where-Object { $_ } | ForEach-Object { [datetime]$_ } | Sort-Object)[0]
-  $held = @($pending.sourceUpdatedAt | Where-Object { $_ } | ForEach-Object { [datetime]$_ } | Sort-Object)[0]
-  Set-PilotBolCursor $Options.Cache $(if ($held) { $held } else { $plan.cursor })
   Write-Log "Summary: $(@($staged.Values | Where-Object { $_.state -eq 'done' }).Count) sent, $($pending.Count) pending$(if ($oldest) { " (oldest staged $($oldest.ToUniversalTime().ToString('yyyy-MM-dd HH:mm'))Z)" }), cursor $(Get-PilotBolCursor $Options.Cache)"
 }

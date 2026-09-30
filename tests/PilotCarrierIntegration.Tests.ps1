@@ -49,6 +49,20 @@ Describe 'Pilot BOL completion plan' {
     @($plan.ready).Count | Should -Be 1
     $plan.deferred[0].reason | Should -Match 'not a positive numeric dispatchOrderId'
   }
+
+  It 'holds every TMW order that shares one Pilot order, ready or not' {
+    $tmwRows[2].pilotOrderRef = '12025078'
+    $plan = Plan $tmwRows
+    @($plan.ready).Count | Should -Be 0
+    @($plan.deferred.tmwOrderId) | Should -Be @(10670001, 10670002)
+    $plan.deferred[0].reason | Should -Be 'Pilot order 12025078 is also on TMW 10670002'
+    $plan.deferred[1].reason | Should -Be 'Pilot order 12025078 is also on TMW 10670001'
+
+    $tmwRows[2].bolNumber = $null
+    $plan = Plan $tmwRows
+    @($plan.ready).Count | Should -Be 0
+    $plan.deferred[1].reason | Should -Match '^freight \d+: missing BOL; Pilot order 12025078 is also on TMW 10670001$'
+  }
 }
 
 Describe 'a BOL run through DataAgent' {
@@ -67,12 +81,14 @@ Describe 'a BOL run through DataAgent' {
       $settings | ConvertTo-Json -Depth 8 | Set-Content "$PcJob/settings.json"
     }
     function Get-PcLog { Get-Content (Join-Path $PcJob ('{0:yyyyMMdd}.log' -f (Get-Date))) | ForEach-Object { ($_ -split "`t")[-1] } }
+    function Get-PcCache($Id) { Get-Content "$PcJob/cache/$Id.json" -Raw | ConvertFrom-Json -DateKind String }
   }
   BeforeEach {
     Remove-Item "$PcJob/out", "$PcJob/*.log", "$PcJob/cache" -Recurse -Force -ErrorAction Ignore
     Set-Location $TestDrive
     $global:PcRows = @(Get-Content "$PSScriptRoot/fixtures/tmw-bols.json" -Raw | ConvertFrom-Json)
-    Mock Invoke-Sqlcmd -ModuleName DataAgent { $global:PcRows }
+    # the read goes through DataAgent's sql source, called from this module's scope
+    Mock Invoke-Sqlcmd -ModuleName PilotCarrierIntegration { $global:PcRows }
     Mock New-PilotSession -ModuleName PilotCarrierIntegration { [pscustomobject]@{ BaseUrl = $BaseUrl } }
   }
   It 'dry_run plans from TMW alone, never calls Pilot, sends nothing' {
@@ -83,13 +99,17 @@ Describe 'a BOL run through DataAgent' {
     $log | Should -Contain 'Dry run, not sending: Pilot 12025078, Pilot 12024244'
     $log | Should -Contain 'End'
     Should -Invoke New-PilotSession -ModuleName PilotCarrierIntegration -Times 0
-    Should -Invoke Invoke-Sqlcmd -ModuleName DataAgent -Times 1 -Exactly -ParameterFilter { $InputFile -eq 'get-data.sql' -and @($Variable) -contains 'LookbackMinutes=1440' }
+    Should -Invoke Invoke-Sqlcmd -ModuleName PilotCarrierIntegration -Times 1 -Exactly -ParameterFilter {
+      $InputFile -eq 'get-data.sql' -and @($Variable) -contains 'LookbackMinutes=1440' -and @($Variable) -contains 'Since=none' }
+    Test-Path "$PcJob/cache" | Should -BeFalse
   }
-  It 'reads the Pilot secret from the environment for the send' {
+  It 'reads the Pilot secret from the environment for the send, and keeps the cache two days' {
     Set-PcSettings
     $config = New-PilotCarrierBolConfig "$PcJob/settings.json"
     $config.dst.args.Pilot.client_secret | Should -Be 'from-env-secret'
     $config.dst.args.Cache | Should -Be 'cache'
+    $config.src.args.KeepDays | Should -Be 2
+    (New-PilotCarrierBolConfig "$PcJob/settings.json").src.args.Tmw.Variable | Should -Contain 'Since=none'
   }
   It 'holds back an order already done unchanged, and sends it again once it changes' {
     Set-PcSettings @{ dry_run = $true }
@@ -98,57 +118,62 @@ Describe 'a BOL run through DataAgent' {
       Get-PilotBolHash ((New-PilotBolPlan -TmwRows $rows).ready | Where-Object dispatchOrderId -eq 12025078).payload
     } $global:PcRows
     New-Item -ItemType Directory "$PcJob/cache" | Out-Null
-    @{ sent_at = [datetime]::UtcNow.ToString('o'); hash = $hash } | ConvertTo-Json | Set-Content "$PcJob/cache/12025078.json"
+    @{ state = 'done'; sent_at = [datetime]::UtcNow.ToString('o'); hash = $hash } | ConvertTo-Json | Set-Content "$PcJob/cache/12025078.json"
     Invoke-PilotCarrierBols "$PcJob/settings.json"
     $log = Get-PcLog
     $log | Should -Contain 'Orders : 2 completed in TMW, 1 ready, 0 waiting, 1 already done'
     $log | Should -Contain 'Dry run, not sending: Pilot 12024244'
     @($log | Where-Object { $_ -like 'Already: *Pilot 12025078, done *' }).Count | Should -Be 1
 
-    @{ sent_at = [datetime]::UtcNow.ToString('o'); hash = 'something else' } | ConvertTo-Json | Set-Content "$PcJob/cache/12025078.json"
+    @{ state = 'done'; sent_at = [datetime]::UtcNow.ToString('o'); hash = 'something else' } | ConvertTo-Json | Set-Content "$PcJob/cache/12025078.json"
     Remove-Item "$PcJob/*.log" -Force
     Invoke-PilotCarrierBols "$PcJob/settings.json"
     Get-PcLog | Should -Contain 'Dry run, not sending: Pilot 12025078, Pilot 12024244'
   }
   It 'reads from the cursor once a send leaves one, and looks back until then' {
     Set-PcSettings
-    (New-PilotCarrierBolConfig "$PcJob/settings.json").src.args.Variable | Should -Contain 'Since=none'
     New-Item -ItemType Directory "$PcJob/cache" | Out-Null
     @{ since = '2026-08-02T10:15:00.250' } | ConvertTo-Json | Set-Content "$PcJob/cache/cursor.json"
-    (New-PilotCarrierBolConfig "$PcJob/settings.json").src.args.Variable | Should -Contain 'Since=2026-08-02T10:15:00.250'
+    (New-PilotCarrierBolConfig "$PcJob/settings.json").src.args.Tmw.Variable | Should -Contain 'Since=2026-08-02T10:15:00.250'
   }
-  It 'stages every order before posting, stays green when Pilot is not reached, and holds the cursor at the oldest pending order' {
+  It 'stages every order before posting, stays green when Pilot is not reached, and moves the cursor' {
     Set-PcSettings
     Mock Get-PilotToken -ModuleName PilotCarrierIntegration { throw 'token service down' }
     { Invoke-PilotCarrierBols "$PcJob/settings.json" } | Should -Not -Throw
     $log = Get-PcLog
     @($log | Where-Object { $_ -like 'Failed : *no token: token service down' }).Count | Should -Be 2
-    @($log | Where-Object { $_ -like 'Summary: 0 sent, 2 pending (oldest staged *Z), cursor 2026-08-02T09:30:00.000' }).Count | Should -Be 1
-    (Get-Content "$PcJob/cache/12024244.json" -Raw | ConvertFrom-Json).state | Should -Be 'pending'
+    @($log | Where-Object { $_ -like 'Summary: 0 sent, 2 pending (oldest staged *Z), cursor 2026-08-02T10:15:00.250' }).Count | Should -Be 1
+    $cached = Get-PcCache 12024244
+    $cached.state | Should -Be 'pending'
+    $cached.pilot | Should -Be 'not reached: no token: token service down'
+    @($cached.rows).Count | Should -Be 1
+    (Get-Content "$PcJob/cache/cursor.json" -Raw | ConvertFrom-Json -DateKind String).since | Should -Be '2026-08-02T10:15:00.250'
   }
-  It 'moves the cursor past an order once it is done, and drops one still pending after keep_days' {
+  It 'reads a pending order again from its cache file when the query no longer returns it, and drops it after keep_days' {
     Set-PcSettings
     Mock Get-PilotToken -ModuleName PilotCarrierIntegration { throw 'token service down' }
     Invoke-PilotCarrierBols "$PcJob/settings.json"
-    $staged = (Get-Content "$PcJob/cache/12024244.json" -Raw | ConvertFrom-Json -DateKind String).staged_at
-    $done = Get-Content "$PcJob/cache/12025078.json" -Raw | ConvertFrom-Json
-    $done.state = 'done'; $done.sent_at = [datetime]::UtcNow.ToString('o')
-    $done | ConvertTo-Json -Depth 6 | Set-Content "$PcJob/cache/12025078.json"
+    $staged = (Get-PcCache 12024244).staged_at
+
+    $global:PcRows = @()
     Remove-Item "$PcJob/*.log" -Force
     Invoke-PilotCarrierBols "$PcJob/settings.json"
     $log = Get-PcLog
-    $log | Should -Contain 'Orders : 2 completed in TMW, 1 ready, 0 waiting, 1 already done'
-    @($log | Where-Object { $_ -like 'Summary: 0 sent, 1 pending *, cursor 2026-08-02T10:15:00.250' }).Count | Should -Be 1
-    (Get-Content "$PcJob/cache/12024244.json" -Raw | ConvertFrom-Json).staged_at.ToUniversalTime() | Should -Be (([datetime]$staged).ToUniversalTime())
+    @($log | Where-Object { $_ -like 'Pending: TMW 1067000?, Pilot 120*, staged *, read again from the cache' }).Count | Should -Be 2
+    $log | Should -Contain 'Orders : 2 completed in TMW, 2 ready, 0 waiting, 0 already done'
+    @($log | Where-Object { $_ -like 'Failed : *no token: token service down' }).Count | Should -Be 2
+    (Get-PcCache 12024244).staged_at | Should -Be $staged
 
     $old = Get-Content "$PcJob/cache/12024244.json" -Raw | ConvertFrom-Json
     $old.staged_at = [datetime]::UtcNow.AddDays(-3).ToString('o')
-    $old | ConvertTo-Json -Depth 6 | Set-Content "$PcJob/cache/12024244.json"
-    $global:PcRows = @($global:PcRows | Where-Object pilotOrderRef -eq '12025078')
+    $old | ConvertTo-Json -Depth 8 | Set-Content "$PcJob/cache/12024244.json"
     Remove-Item "$PcJob/*.log" -Force
     Invoke-PilotCarrierBols "$PcJob/settings.json"
-    @(Get-PcLog | Where-Object { $_ -like 'Dropped: TMW *, Pilot 12024244, pending since *' }).Count | Should -Be 1
+    $log = Get-PcLog
+    @($log | Where-Object { $_ -like 'Dropped: TMW 10670002, Pilot 12024244, pending since *, last: not reached: no token: token service down' }).Count | Should -Be 1
     Test-Path "$PcJob/cache/12024244.json" | Should -BeFalse
+    $log | Should -Contain 'Orders : 1 completed in TMW, 1 ready, 0 waiting, 0 already done'
+    @($log | Where-Object { $_ -like 'Summary: 0 sent, 1 pending *, cursor 2026-08-02T10:15:00.250' }).Count | Should -Be 1
   }
   It 'logs the idle marker when TMW has no completions' {
     Set-PcSettings @{ dry_run = $true }

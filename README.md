@@ -37,20 +37,23 @@ order, for the cursor) and optionally `railCarNumber`.
 - Ready orders are posted in parallel. An order is done when Pilot answers with it Kiosked (status
   `4`; the status text can be stale) and `allItemsHasBols` true. A post to an order already Kiosked
   is answered the same way, so it is simply done.
+- One Pilot order on two TMW orders would be two posts to one Pilot record, each Kiosking it with only
+  its own lines, so every TMW order sharing a Pilot id waits, and the log names the other.
 - Each order leaves a file in the cache folder, `cache/<dispatchOrderId>.json` (`cache` in settings
-  to move it), like the other order feeds: what goes, a hash of it, its state and Pilot's answer. It is
-  written `pending` before the post and marked `done` when Pilot finishes the order. An order that
-  matches a done file is logged `Already:` and not sent again, and a gallons or BOL correction is sent
-  again. A done file goes `keep_days` (2 by default) after its send. A pending one goes `keep_days`
-  after it was first staged, logged `Dropped:`.
+  to move it), like the other order feeds: what goes, its TMW rows, a hash of it, its state and Pilot's
+  answer. It is written `pending` before the post and marked `done` when Pilot finishes the order. An
+  order that matches a done file is logged `Already:` and not sent again, and a gallons or BOL
+  correction is sent again. A done file goes `keep_days` (2 by default) after its send. A pending one
+  goes `keep_days` after it was first staged, logged `Dropped:`.
 - The query reads from a cursor, `cache/cursor.json`, like gravitate: the job passes it as
-  `Since=<time>` (`Since=none` before the first send), and the query reads from the earlier of that and
-  its own lookback. So a missed run, however long, loses nothing. The cursor stops at the oldest order
-  still pending, so the query keeps returning that order until it is done or dropped.
+  `Since=<time>` (`Since=none` before the first run), and the query reads from the earlier of that and
+  its own lookback. So a missed run, however long, loses nothing. The cursor moves to the latest change
+  read, every run.
 - An answer that is not done (turned down, or not every item with a BOL) is logged `Not done:`, and
   not reaching Pilot (auth, throttling, a server error, a timeout) is logged `Failed :`. Either way the
-  order stays pending, goes again next run, and the run stays green. The log ends with
-  `Summary: N sent, P pending (oldest staged <time>), cursor <time>`.
+  order stays pending and the run stays green. A pending order the query no longer returns is read
+  again from its cache file, logged `Pending:`, so it goes again next run whatever TMW returns. The log
+  ends with `Summary: N sent, P pending (oldest staged <time>), cursor <time>`.
 
 ```json
 {

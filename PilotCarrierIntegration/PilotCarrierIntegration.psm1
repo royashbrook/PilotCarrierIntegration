@@ -51,8 +51,8 @@ function New-PilotCarrierBolConfig {
   $tmw.Variable = @($tmw.Variable) + "Since=$(if ($cursor) { $cursor } else { 'none' })"
   $config = @{
     directory = $s.directory
-    src = @{ adapter = 'sql'; args = $tmw }
-    fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Cache = $cache; KeepDays = $(if ($s.dry_run) { 0 } elseif ($s.keep_days) { [int]$s.keep_days } else { 2 }) } }
+    src = @{ adapter = Get-AdapterPath 'bol-read'; args = @{ Tmw = $tmw; Cache = $cache; KeepDays = $(if ($s.dry_run) { 0 } elseif ($s.keep_days) { [int]$s.keep_days } else { 2 }) } }
+    fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Cache = $cache } }
     dst = if ($s.dry_run) {
       @{ adapter = Get-AdapterPath 'bol-dry-run'; args = @{} }
     } else {

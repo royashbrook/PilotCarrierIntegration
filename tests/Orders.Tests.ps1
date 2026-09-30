@@ -462,14 +462,15 @@ Describe 'cache lifetimes' {
       Test-Path "$job/cache/2.json" | Should -BeTrue
     }
   }
-  It 'drops a BOL cache file older than keep_days before planning, so a changed order can go again' {
+  It 'drops a done BOL cache file older than keep_days when the rows are read, so a changed order can go again' {
     InModuleScope PilotCarrierIntegration {
       $dir = Join-Path $TestDrive 'bol-cache'
       New-Item -ItemType Directory $dir -Force | Out-Null
-      @{ sent_at = [datetime]::UtcNow.AddDays(-8).ToString('o'); hash = 'x' } | ConvertTo-Json | Set-Content "$dir/1.json"
-      @{ sent_at = [datetime]::UtcNow.AddDays(-1).ToString('o'); hash = 'y' } | ConvertTo-Json | Set-Content "$dir/2.json"
+      @{ state = 'done'; sent_at = [datetime]::UtcNow.AddDays(-8).ToString('o'); hash = 'x' } | ConvertTo-Json | Set-Content "$dir/1.json"
+      @{ state = 'done'; sent_at = [datetime]::UtcNow.AddDays(-1).ToString('o'); hash = 'y' } | ConvertTo-Json | Set-Content "$dir/2.json"
+      Mock Invoke-Sqlcmd { @() }
       Mock Write-Log
-      Save-PilotBolPlan @() @{ Path = (Join-Path $TestDrive 'bol-out/plan.json'); Cache = $dir; KeepDays = 7 }
+      $null = Read-PilotBolRows @{ Tmw = @{ Query = 'select 1' }; Cache = $dir; KeepDays = 7 }
       Test-Path "$dir/1.json" | Should -BeFalse
       Test-Path "$dir/2.json" | Should -BeTrue
     }
