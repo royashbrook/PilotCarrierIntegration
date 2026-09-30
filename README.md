@@ -16,7 +16,8 @@ TMW completed freight -> one Pilot `PUT /bol` per order, once every line is comp
 The feed's own query returns completed freight, one row per freight line. It needs `tmwOrderId`,
 `pilotOrderRef` (the TMW `PO`, Pilot's `dispatchOrderId`), `freightId`,
 `freightSequence`, `pilotOrderItemId` (the freight `OID`), `bolNumber`, `grossGallons`, `netGallons`,
-`startPullDateTime`, `endPullDateTime`, `dropDateTime` and optionally `railCarNumber`.
+`startPullDateTime`, `endPullDateTime`, `dropDateTime`, `sourceUpdatedAt` (the latest TMW change on the
+order, for the cursor) and optionally `railCarNumber`.
 
 | TMW value | Pilot field |
 |---|---|
@@ -36,13 +37,20 @@ The feed's own query returns completed freight, one row per freight line. It nee
 - Ready orders are posted in parallel. An order is done when Pilot answers with it Kiosked (status
   `4`; the status text can be stale) and `allItemsHasBols` true. A post to an order already Kiosked
   is answered the same way, so it is simply done.
-- Each done order leaves a file in the cache folder, `cache/<dispatchOrderId>.json` (`cache` in settings
-  to move it), like the other order feeds: what was sent, a hash of it, and Pilot's answer. The query's
-  window overlaps runs; an order that matches its cache file is logged `Already:` and not sent again, and a gallons or BOL correction
-  is sent again. A cache file goes `keep_days` (2 by default) after its send.
-- An answer that is not done (turned down, or not every item with a BOL) is logged `Not done:` with
-  Pilot's answer and tried again next run. The run fails only when Pilot cannot be reached (auth,
-  throttling, a server error, a timeout).
+- Each order leaves a file in the cache folder, `cache/<dispatchOrderId>.json` (`cache` in settings
+  to move it), like the other order feeds: what goes, a hash of it, its state and Pilot's answer. It is
+  written `pending` before the post and marked `done` when Pilot finishes the order. An order that
+  matches a done file is logged `Already:` and not sent again, and a gallons or BOL correction is sent
+  again. A done file goes `keep_days` (2 by default) after its send. A pending one goes `keep_days`
+  after it was first staged, logged `Dropped:`.
+- The query reads from a cursor, `cache/cursor.json`, like gravitate: the job passes it as
+  `Since=<time>` (`Since=none` before the first send), and the query reads from the earlier of that and
+  its own lookback. So a missed run, however long, loses nothing. The cursor stops at the oldest order
+  still pending, so the query keeps returning that order until it is done or dropped.
+- An answer that is not done (turned down, or not every item with a BOL) is logged `Not done:`, and
+  not reaching Pilot (auth, throttling, a server error, a timeout) is logged `Failed :`. Either way the
+  order stays pending, goes again next run, and the run stays green. The log ends with
+  `Summary: N sent, P pending (oldest staged <time>), cursor <time>`.
 
 ```json
 {
@@ -59,7 +67,7 @@ The feed's own query returns completed freight, one row per freight line. It nee
   "tmw": {
     "InputFile": "get-data.sql",
     "ConnectionString": "env:TMW_CONNECTION_STRING",
-    "Variable": ["LookbackMinutes=120"],
+    "Variable": ["BillTo=ACME", "LookbackMinutes=1440"],
     "QueryTimeout": 1800
   },
   "throttle_limit": 8

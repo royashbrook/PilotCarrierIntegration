@@ -110,6 +110,46 @@ Describe 'a BOL run through DataAgent' {
     Invoke-PilotCarrierBols "$PcJob/settings.json"
     Get-PcLog | Should -Contain 'Dry run, not sending: Pilot 12025078, Pilot 12024244'
   }
+  It 'reads from the cursor once a send leaves one, and looks back until then' {
+    Set-PcSettings
+    (New-PilotCarrierBolConfig "$PcJob/settings.json").src.args.Variable | Should -Contain 'Since=none'
+    New-Item -ItemType Directory "$PcJob/cache" | Out-Null
+    @{ since = '2026-08-02T10:15:00.250' } | ConvertTo-Json | Set-Content "$PcJob/cache/cursor.json"
+    (New-PilotCarrierBolConfig "$PcJob/settings.json").src.args.Variable | Should -Contain 'Since=2026-08-02T10:15:00.250'
+  }
+  It 'stages every order before posting, stays green when Pilot is not reached, and holds the cursor at the oldest pending order' {
+    Set-PcSettings
+    Mock Get-PilotToken -ModuleName PilotCarrierIntegration { throw 'token service down' }
+    { Invoke-PilotCarrierBols "$PcJob/settings.json" } | Should -Not -Throw
+    $log = Get-PcLog
+    @($log | Where-Object { $_ -like 'Failed : *no token: token service down' }).Count | Should -Be 2
+    @($log | Where-Object { $_ -like 'Summary: 0 sent, 2 pending (oldest staged *Z), cursor 2026-08-02T09:30:00.000' }).Count | Should -Be 1
+    (Get-Content "$PcJob/cache/12024244.json" -Raw | ConvertFrom-Json).state | Should -Be 'pending'
+  }
+  It 'moves the cursor past an order once it is done, and drops one still pending after keep_days' {
+    Set-PcSettings
+    Mock Get-PilotToken -ModuleName PilotCarrierIntegration { throw 'token service down' }
+    Invoke-PilotCarrierBols "$PcJob/settings.json"
+    $staged = (Get-Content "$PcJob/cache/12024244.json" -Raw | ConvertFrom-Json -DateKind String).staged_at
+    $done = Get-Content "$PcJob/cache/12025078.json" -Raw | ConvertFrom-Json
+    $done.state = 'done'; $done.sent_at = [datetime]::UtcNow.ToString('o')
+    $done | ConvertTo-Json -Depth 6 | Set-Content "$PcJob/cache/12025078.json"
+    Remove-Item "$PcJob/*.log" -Force
+    Invoke-PilotCarrierBols "$PcJob/settings.json"
+    $log = Get-PcLog
+    $log | Should -Contain 'Orders : 2 completed in TMW, 1 ready, 0 waiting, 1 already done'
+    @($log | Where-Object { $_ -like 'Summary: 0 sent, 1 pending *, cursor 2026-08-02T10:15:00.250' }).Count | Should -Be 1
+    (Get-Content "$PcJob/cache/12024244.json" -Raw | ConvertFrom-Json).staged_at.ToUniversalTime() | Should -Be (([datetime]$staged).ToUniversalTime())
+
+    $old = Get-Content "$PcJob/cache/12024244.json" -Raw | ConvertFrom-Json
+    $old.staged_at = [datetime]::UtcNow.AddDays(-3).ToString('o')
+    $old | ConvertTo-Json -Depth 6 | Set-Content "$PcJob/cache/12024244.json"
+    $global:PcRows = @($global:PcRows | Where-Object pilotOrderRef -eq '12025078')
+    Remove-Item "$PcJob/*.log" -Force
+    Invoke-PilotCarrierBols "$PcJob/settings.json"
+    @(Get-PcLog | Where-Object { $_ -like 'Dropped: TMW *, Pilot 12024244, pending since *' }).Count | Should -Be 1
+    Test-Path "$PcJob/cache/12024244.json" | Should -BeFalse
+  }
   It 'logs the idle marker when TMW has no completions' {
     Set-PcSettings @{ dry_run = $true }
     $global:PcRows = @()

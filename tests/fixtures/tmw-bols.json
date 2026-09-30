@@ -13,7 +13,8 @@
     "startPullDateTime": "2026-08-02T08:40:00",
     "endPullDateTime": "2026-08-02T08:44:00",
     "dropDateTime": "2026-08-02T09:09:00",
-    "railCarNumber": "7349"
+    "railCarNumber": "7349",
+    "sourceUpdatedAt": "2026-08-02T09:30:00"
   },
   {
     "tmwOrderId": 10670001,
@@ -29,7 +30,8 @@
     "startPullDateTime": "2026-08-02T08:40:00",
     "endPullDateTime": "2026-08-02T08:44:00",
     "dropDateTime": "2026-08-02T09:09:00",
-    "railCarNumber": "7349"
+    "railCarNumber": "7349",
+    "sourceUpdatedAt": "2026-08-02T09:30:00"
   },
   {
     "tmwOrderId": 10670002,
@@ -45,6 +47,7 @@
     "startPullDateTime": "2026-08-02T07:51:00",
     "endPullDateTime": "2026-08-02T08:05:00",
     "dropDateTime": "2026-08-02T09:10:00",
-    "railCarNumber": "RN5356"
+    "railCarNumber": "RN5356",
+    "sourceUpdatedAt": "2026-08-02T10:15:00.250"
   }
 ]

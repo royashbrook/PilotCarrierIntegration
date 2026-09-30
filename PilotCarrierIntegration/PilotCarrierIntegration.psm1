@@ -44,9 +44,14 @@ function New-PilotCarrierBolConfig {
   $s = Read-PilotCarrierSettings $Settings
   # one file per Pilot order done, in the job's cache folder, committed with the log
   $cache = if ($s.cache) { $s.cache } else { 'cache' }
+  # the query reads from the cursor the last send left in the cache, or looks back LookbackMinutes when there is none
+  # (Since=none: sqlcmd takes no empty value)
+  $cursor = Get-PilotBolCursor (Join-Path $s.directory $cache)
+  $tmw = $s.tmw.Clone()
+  $tmw.Variable = @($tmw.Variable) + "Since=$(if ($cursor) { $cursor } else { 'none' })"
   $config = @{
     directory = $s.directory
-    src = @{ adapter = 'sql'; args = $s.tmw }
+    src = @{ adapter = 'sql'; args = $tmw }
     fmt = @{ adapter = Get-AdapterPath 'bol-plan'; args = @{ Path = 'out/pilot-bol-plan.json'; Cache = $cache; KeepDays = $(if ($s.dry_run) { 0 } elseif ($s.keep_days) { [int]$s.keep_days } else { 2 }) } }
     dst = if ($s.dry_run) {
       @{ adapter = Get-AdapterPath 'bol-dry-run'; args = @{} }
