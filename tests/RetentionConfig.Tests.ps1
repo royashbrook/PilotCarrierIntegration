@@ -5,8 +5,8 @@ BeforeAll {
 Describe 'artifact retention config' {
   It 'binds its runner and SQL source to the exact version despite the document dependency' {
     & (Get-Module PilotCarrierIntegration) {
-      $script:DataAgent.Version.ToString() | Should -Be '0.7.3'
-      (Get-Command Invoke-DataAgent).Module.Version.ToString() | Should -Be '0.7.3'
+      $script:DataAgent.Version.ToString() | Should -Be '0.7.4'
+      (Get-Command Invoke-DataAgent).Module.Version.ToString() | Should -Be '0.7.4'
     }
     @(Get-Module DataAgent | ForEach-Object { $_.Version.ToString() }) | Should -Contain '0.5.0'
   }
