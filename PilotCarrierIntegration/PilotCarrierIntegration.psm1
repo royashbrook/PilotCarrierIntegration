@@ -1,6 +1,9 @@
 # PilotCarrierIntegration: Pilot carrier feeds as DataAgent runs, on PilotCarrierClient.
 # Each Invoke-* runs DataAgent in the settings file's folder, so the log and output land there.
 
+# DocumentAgent loads its own runner version too; this wrapper uses its exact pin.
+$script:DataAgent = Import-Module DataAgent -RequiredVersion 0.7.3 -PassThru
+
 . (Join-Path $PSScriptRoot 'Bols.ps1')
 . (Join-Path $PSScriptRoot 'Orders.ps1')
 . (Join-Path $PSScriptRoot 'Documents.ps1')
@@ -59,7 +62,7 @@ function New-PilotCarrierBolConfig {
       @{ adapter = Get-AdapterPath 'bol-send'; args = @{ Pilot = $s.pilot; ThrottleLimit = $s.throttle_limit; Cache = $cache } }
     }
   }
-  foreach ($name in 'keepdays', 'purgefiles') { if ($s.ContainsKey($name)) { $config[$name] = $s[$name] } }
+  foreach ($name in 'keepdays', 'purgefiles', 'filename_date_format') { if ($s.ContainsKey($name)) { $config[$name] = $s[$name] } }
   $config
 }
 
@@ -80,7 +83,7 @@ function New-PilotCarrierOrderConfig {
     fmt = @{ adapter = Get-AdapterPath 'order-plan'; args = @{ Path = 'out/pilot-orders.xml' } }
     dst = @{ adapter = Get-AdapterPath 'order-stage'; args = @{ Settings = $s } }
   }
-  foreach ($name in 'keepdays', 'purgefiles') { if ($s.ContainsKey($name)) { $config[$name] = $s[$name] } }
+  foreach ($name in 'keepdays', 'purgefiles', 'filename_date_format') { if ($s.ContainsKey($name)) { $config[$name] = $s[$name] } }
   $config
 }
 

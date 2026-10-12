@@ -134,7 +134,7 @@ function Set-PilotBolCursor([string]$Folder, $Since) {
 function Read-PilotBolRows {
   param([hashtable]$Options)
   # the query runs through DataAgent's own sql source, then the rows become plain objects so they can be cached
-  $rows = @(& (Join-Path (Get-Module DataAgent).ModuleBase 'src/sql.ps1') -Data @() -Options $Options.Tmw)
+  $rows = @(& (Join-Path $script:DataAgent.ModuleBase 'src/sql.ps1') -Data @() -Options $Options.Tmw)
   if ($rows.Count -and $rows[0] -is [Data.DataRow]) { $rows = @($rows | Select-Object $rows[0].Table.Columns.ColumnName) }
   $cutoff = if ($Options.KeepDays -gt 0) { [datetime]::UtcNow.AddDays(-$Options.KeepDays) }
   $read = @($rows | ForEach-Object { [long]$_.tmwOrderId })
