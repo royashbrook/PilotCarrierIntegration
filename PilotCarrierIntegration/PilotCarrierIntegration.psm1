@@ -2,7 +2,7 @@
 # Each Invoke-* runs DataAgent in the settings file's folder, so the log and output land there.
 
 # DocumentAgent loads its own runner version too; this wrapper uses its exact pin.
-$script:DataAgent = Import-Module DataAgent -RequiredVersion 0.7.3 -PassThru
+$script:DataAgent = Import-Module DataAgent -RequiredVersion 0.7.4 -PassThru
 
 . (Join-Path $PSScriptRoot 'Bols.ps1')
 . (Join-Path $PSScriptRoot 'Orders.ps1')
