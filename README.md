@@ -55,6 +55,11 @@ order, for the cursor) and optionally `railCarNumber`.
   again from its cache file, logged `Pending:`, so it goes again next run whatever TMW returns. The log
   ends with `Summary: N sent, P pending (oldest staged <time>), cursor <time>`.
 
+For BOL completions and order feeds, optional `filename_date_format` (`yyyyMMdd`
+or `yyyy-MM-dd`) passes filename-day cleanup to DataAgent. The cutoff day is
+retained; without the setting, file cleanup uses filesystem age. Business cache
+retention remains separate.
+
 ```json
 {
   "keepdays": 10,
