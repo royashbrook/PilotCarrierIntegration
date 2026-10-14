@@ -105,6 +105,7 @@ function New-PilotCarrierDocumentConfig {
   }
   foreach ($name in 'receipts', 'keep_days', 'dry_run', 'max_sends', 'keepdays', 'purgefiles') { if ($s.ContainsKey($name)) { $agent[$name] = $s[$name] } }
   $config = New-DocumentAgentConfig $agent
+  if ($s.ContainsKey('filename_date_format')) { $config.filename_date_format = $s.filename_date_format }
   $config.directory = $s.directory
   $config
 }
