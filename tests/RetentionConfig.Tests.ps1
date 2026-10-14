@@ -19,10 +19,10 @@ Describe 'artifact retention config' {
     Mock Get-PilotBolCursor -ModuleName PilotCarrierIntegration { }
   }
 
-  It 'passes filename-day cleanup through both feed wrappers' {
+  It 'passes filename-day cleanup through all feed wrappers' {
     $settings.filename_date_format = 'yyyyMMdd'
     $settings | ConvertTo-Json -Depth 8 | Set-Content $path
-    foreach ($command in 'New-PilotCarrierBolConfig', 'New-PilotCarrierOrderConfig') {
+    foreach ($command in 'New-PilotCarrierBolConfig', 'New-PilotCarrierOrderConfig', 'New-PilotCarrierDocumentConfig') {
       $config = & $command $path
       $config.filename_date_format | Should -BeExactly 'yyyyMMdd'
       $config.keepdays | Should -Be 10
@@ -32,7 +32,7 @@ Describe 'artifact retention config' {
 
   It 'omits the optional setting when absent' {
     $settings | ConvertTo-Json -Depth 8 | Set-Content $path
-    foreach ($command in 'New-PilotCarrierBolConfig', 'New-PilotCarrierOrderConfig') {
+    foreach ($command in 'New-PilotCarrierBolConfig', 'New-PilotCarrierOrderConfig', 'New-PilotCarrierDocumentConfig') {
       (& $command $path).ContainsKey('filename_date_format') | Should -BeFalse
     }
   }
