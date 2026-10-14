@@ -15,6 +15,7 @@ jobs:
           Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
           # the manifest is the one list of pins: install exactly what it requires
           foreach ($r in (Import-PowerShellDataFile ./PilotCarrierIntegration/PilotCarrierIntegration.psd1).RequiredModules) { Install-Module $r.ModuleName -RequiredVersion $r.RequiredVersion -Scope CurrentUser -Force -AcceptLicense }
-          Install-Module Add-PrefixForLogging, Clear-Files, SqlServer -Scope CurrentUser -Force -AcceptLicense
+          Install-Module Add-PrefixForLogging, SqlServer -Scope CurrentUser -Force -AcceptLicense
+          Install-Module Clear-Files -RequiredVersion 1.1.0.0 -Scope CurrentUser -Force -AcceptLicense
           Test-ModuleManifest ./PilotCarrierIntegration/PilotCarrierIntegration.psd1 | Out-Null
           Invoke-Pester ./tests -CI
