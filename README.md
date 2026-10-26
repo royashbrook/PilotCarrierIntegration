@@ -206,8 +206,8 @@ separate before/after observations at each destination. The full list is not a o
 | P10 | Pending work absent from the next SQL result | Retained rows supply the retry; receipt expiry removes them. |
 | P11 | Receipt expiry and cursor inputs | Receipt-date cleanup and cursor configuration are tested. A caller query's inclusive boundary and source reselection need feed-level tests too. |
 | P12 | Completion acknowledgment | Matching order, Kiosked and all items with BOLs are required. Incomplete or mismatched responses remain pending. |
-| P13 | Ordinary refusal versus auth/rate-limit/server/timeout failure | 4xx other than401/403/429 stays pending, including lock refusals until A01 is implemented.401/403/429/5xx and timeout preserve the original exception at the send boundary. The batch retains pending work. |
-| P14 | Misleading validation text | A generic400 about invalid input is not a completed, already-validated order. |
+| P13 | Ordinary refusal versus auth/rate-limit/server/timeout failure | 4xx other than 401/403/429 stays pending, including lock refusals until A01 is implemented. 401/403/429/5xx and timeout preserve the original exception at the send boundary. The batch retains pending work. |
+| P14 | Misleading validation text | A generic HTTP 400 about invalid input is not a completed, already-validated order. |
 | P15 | Document targeting and duplicate attachment names | Order/BOL/item correlation, multiple targets, deferred matches and existing attachments in `Documents.Tests.ps1`. |
 | P16 | PDF payload and document refusal | PDF signature, item/name requirements, request fields and refused-upload behavior. No downstream document-storage proof. |
 | P17 | Dry runs and idle jobs | Planning/no-send behavior for BOLs and documents, plus idle logs. TMW order dry runs still require a guarded test database. |
@@ -216,7 +216,7 @@ The following are acceptance cases or implementation gaps, not green local tests
 
 | ID | Scenario | Remaining work |
 |---|---|---|
-| A01 | A definitive already-validated/locked update rejection finishes the payload | Not implemented. Capture the provider discriminator, then test done/hash suppression with a rejection reason. An arbitrary400 is not sufficient evidence. |
+| A01 | A definitive already-validated/locked update rejection finishes the payload | Not implemented. Capture the provider discriminator, then test done/hash suppression with a rejection reason. An arbitrary HTTP 400 is not sufficient evidence. |
 | A02 | Changed BOL data before versus after remote validation | Joint acceptance test: accepted correction before the lock, definitive rejection after it, exact response and unchanged remote data on refusal. |
 | A03 | Identical acknowledgment retry versus a later changed correction | Local behavior is covered above; remote idempotency and validation timing still need destination evidence. |
 | A04 | Remote reset with unchanged data and existing documents | No reset detector or reset-generation handling. Receipt expiry is not a reset signal. |
