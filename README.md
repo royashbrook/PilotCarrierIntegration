@@ -96,8 +96,11 @@ to accept or reject in TMW.
 - Orders are read over a rolling window starting `poll.lookback_days` before today (0 by default) and
   running `poll.window_days` (30 by default, at least 2; Pilot reads at most 30). Pilot's read
   has no status filter, so one filter runs right after it: a status in `poll.include_statuses`
-  (Scheduled, `2`, by default), a delivery window that ends after it starts, and at least one active
+  (Scheduled, `2`, by default), a scheduled window that ends after it starts, and at least one active
   item, every one with gallons. An order that fails stays in Pilot and is read again next run.
+- `scheduledStartDateTime` and `scheduledEndDateTime` supply the TMW stop earliest/latest windows.
+  `deliveryWindowStartDateTime` and `deliveryWindowEndDateTime` are ignored, including when populated.
+  Missing or reversed scheduled timestamps are not replaced with those optional delivery fields.
 - The cache folder (`cache`, default `cache`) keeps one file per Pilot order: `staged` with its TMW
   order, or `skipped` with the reason. A staged order is passed over before anything else, and a skip
   reason is logged only when it is new or changes. An order file goes `keep_days` (7 by default)

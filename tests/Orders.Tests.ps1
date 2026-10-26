@@ -176,20 +176,40 @@ Describe 'Pilot order translation' {
     @($converted.stops | Where-Object type -eq 'DR')[0].name | Should -Be 'NO LOCATION'
     $converted.stops[0].freight[0].commodityName | Should -Be 'NO PRODUCT'
   }
-  It 'uses the delivery window rather than Pilot planning timestamps' {
-    $canonical.deliveryWindowStart | Should -Be ([datetime]'2026-07-27T23:00:00')
-    $canonical.deliveryWindowEnd | Should -Be ([datetime]'2026-07-28T06:00:00')
-    $canonical.stops[0].earliest | Should -Be ([datetime]'2026-07-27T23:00:00')
-    $canonical.stops[0].latest | Should -Be ([datetime]'2026-07-28T06:00:00')
+  It 'uses scheduled timestamps even when deliveryWindow fields disagree' {
+    $canonical.deliveryWindowStart | Should -Be ([datetime]'2026-07-27T23:12:00')
+    $canonical.deliveryWindowEnd | Should -Be ([datetime]'2026-07-28T05:48:00')
+    foreach ($stop in $canonical.stops) {
+      $stop.earliest | Should -Be ([datetime]'2026-07-27T23:12:00')
+      $stop.latest | Should -Be ([datetime]'2026-07-28T05:48:00')
+    }
   }
-  It 'fails closed on a missing or reversed delivery window' {
-    $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
-    $bad.deliveryWindowStartDateTime = $null
-    { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw '*no complete delivery window*'
-
-    $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
-    $bad.deliveryWindowEndDateTime = $bad.deliveryWindowStartDateTime
-    { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw '*window must end after*'
+  It 'ignores absent or invalid deliveryWindow fields for translation and eligibility' {
+    foreach ($value in @($null, 'not a date')) {
+      $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $raw.deliveryWindowStartDateTime = $value
+      $raw.deliveryWindowEndDateTime = $value
+      Get-PilotOrderSkipReason $raw @(2) | Should -BeNullOrEmpty
+      $converted = ConvertFrom-PilotOrder $raw $cfg $references
+      $converted.deliveryWindowStart | Should -Be ([datetime]$raw.scheduledStartDateTime)
+      $converted.deliveryWindowEnd | Should -Be ([datetime]$raw.scheduledEndDateTime)
+    }
+  }
+  It 'does not fall back to deliveryWindow when either scheduled timestamp is missing' {
+    foreach ($field in 'scheduledStartDateTime', 'scheduledEndDateTime') {
+      $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $bad.$field = $null
+      Get-PilotOrderSkipReason $bad @(2) | Should -Be 'no scheduled window'
+      { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw '*no complete scheduled window*'
+    }
+  }
+  It 'refuses equal or reversed scheduled timestamps even with valid deliveryWindow fields' {
+    foreach ($minutes in 0, -1) {
+      $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $bad.scheduledEndDateTime = ([datetime]$bad.scheduledStartDateTime).AddMinutes($minutes).ToString('s')
+      Get-PilotOrderSkipReason $bad @(2) | Should -Be 'scheduled window ends before it starts'
+      { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw '*scheduled window must end after*'
+    }
   }
   It 'fails closed when a stop does not fit the TMW display fields' {
     $tooLong = $canonical | ConvertTo-Json -Depth 20 | ConvertFrom-Json
@@ -202,22 +222,22 @@ Describe 'poll window and filtering' {
   It 'refuses a one-day window that can drop straddling loads' {
     { Receive-PilotOrders ([pscustomobject]@{}) $session 1 } | Should -Throw
   }
-  It 'stages only good loads: Scheduled, a delivery window, active items all with gallons' {
+  It 'stages only good loads: Scheduled, a scheduled window, active items all with gallons' {
     $item = [pscustomobject]@{ dispatchOrderItemId = 7; gallons = 7500; isDeleted = $false }
-    $win = @{ deliveryWindowStartDateTime = '2026-09-28T12:00:00'; deliveryWindowEndDateTime = '2026-09-28T16:00:00' }
+    $win = @{ scheduledStartDateTime = '2026-09-28T12:00:00'; scheduledEndDateTime = '2026-09-28T16:00:00' }
     $w = $win + @{ dispatchOrderItems = @($item) }
     $records = @(
       [pscustomobject](@{ dispatchOrderId = 1; dispatchOrderStatusTypeId = 2 } + $w)
       [pscustomobject](@{ dispatchOrderId = 2; dispatchOrderStatusTypeId = 4; dispatchOrderStatusTypeName = 'Kiosked' } + $w)
       [pscustomobject](@{ dispatchOrderId = 3; dispatchOrderStatusTypeId = 1 } + $w)
       [pscustomobject]@{ dispatchOrderId = 4; dispatchOrderStatusTypeId = 2; dispatchOrderItems = @($item) }
-      [pscustomobject]@{ dispatchOrderId = 5; dispatchOrderStatusTypeId = 2; deliveryWindowStartDateTime = '2026-09-28T16:00:00'; deliveryWindowEndDateTime = '2026-09-28T12:00:00'; dispatchOrderItems = @($item) }
+      [pscustomobject]@{ dispatchOrderId = 5; dispatchOrderStatusTypeId = 2; scheduledStartDateTime = '2026-09-28T16:00:00'; scheduledEndDateTime = '2026-09-28T12:00:00'; dispatchOrderItems = @($item) }
       [pscustomobject](@{ dispatchOrderId = 6; dispatchOrderStatusTypeId = 2 } + $win + @{ dispatchOrderItems = @() })
       [pscustomobject](@{ dispatchOrderId = 7; dispatchOrderStatusTypeId = 2 } + $win + @{ dispatchOrderItems = @([pscustomobject]@{ dispatchOrderItemId = 8; gallons = 0; isDeleted = $false }) })
     )
     @(Select-PilotOrdersToProcess $records $cfg).dispatchOrderId | Should -Be @(1)
     @($records | ForEach-Object { Get-PilotOrderSkipReason $_ @(2) }) | Should -Be @(
-      'status 4 Kiosked', 'status 1', 'no delivery window', 'delivery window ends before it starts', 'no active items', 'no gallons on item 8')
+      'status 4 Kiosked', 'status 1', 'no scheduled window', 'scheduled window ends before it starts', 'no active items', 'no gallons on item 8')
     $cfg2 = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $cfg2.poll.include_statuses = @(1, 2)
     @(Select-PilotOrdersToProcess $records $cfg2).dispatchOrderId | Should -Be @(1, 3)
@@ -370,7 +390,7 @@ Describe 'direct TMW DataExchange staging' {
     @($command.parameters | Where-Object name -eq '@window1').value | Should -Be ''
     @($command.parameters | Where-Object name -eq '@window2').value | Should -Be 'Custom'
     @($command.parameters | Where-Object name -eq '@remark').value |
-      Should -Be 'PO: 10877997 WINDOW: 2300-0600'
+      Should -Be 'PO: 10877997 WINDOW: 2312-0548'
   }
   It 'routes the created order to its division before accepting the transaction' {
     $command.sql | Should -Match "@source_date, 'DX', @billto"
