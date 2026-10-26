@@ -185,3 +185,48 @@ test, add `"dry_run": true`: the run reads and plans, names what would go, and f
 nothing. `max_sends` caps the uploads per run.
 
 `New-PilotCarrierDocumentConfig` returns the DataAgent config without running it.
+
+## Test coverage
+
+Run the local suite with `Invoke-Pester ./tests`. Its API and SQL calls are mocked. A passing local
+suite establishes the behavior below, not a live carrier-system acceptance result. Live tests need
+separate before/after observations at each destination. The full list is not a one-session checklist.
+
+| ID | Scenario | Current automated coverage |
+|---|---|---|
+| P01 | Incoming order identities, item references, supplier/product keys and GAL quantity | Translation fixtures in `Orders.Tests.ps1`. |
+| P02 | Scheduled timestamps override optional delivery-window fields | Present, absent, invalid and conflicting optional fields; missing/equal/reversed scheduled bounds. |
+| P03 | Several products, pickups, deliveries and suppliers | Translation/grouping fixtures. Not every real native load topology is qualified by these tests. |
+| P04 | Missing lookup data, partial addresses and required identifiers | Placeholders and refusal cases. Actual dispatcher mapping remains a separate acceptance step. |
+| P05 | Wrong status, absent items or nonpositive gallons | Eligibility, skipped reasons and already-staged cache checks. |
+| P06 | Native duplicate staging and transactional DX output | Generated SQL/archive assertions and mocked staging outcomes, not live SQL execution. Existing orders remain unchanged. |
+| P07 | Missing BOL, OID, gallons or completion times | Whole-order hold and reason assertions in `PilotCarrierIntegration.Tests.ps1`. |
+| P08 | Repeated item IDs or two native orders sharing one carrier order | Planner holds rather than sending ambiguous completions. |
+| P09 | Identical done payload versus changed payload | Same retained hash suppresses; changed hash is ready again. This is cache-bounded, not permanent duplicate prevention. |
+| P10 | Pending work absent from the next SQL result | Retained rows supply the retry; receipt expiry removes them. |
+| P11 | Receipt expiry and cursor inputs | Receipt-date cleanup and cursor configuration are tested. A caller query's inclusive boundary and source reselection need feed-level tests too. |
+| P12 | Completion acknowledgment | Matching order, Kiosked and all items with BOLs are required. Incomplete or mismatched responses remain pending. |
+| P13 | Ordinary refusal versus auth/rate-limit/server/timeout failure | Non-lock4xx stays pending;401/403/429/5xx and timeout preserve the original exception at the send boundary. The batch retains pending work. |
+| P14 | Misleading validation text | A generic400 about invalid input is not a completed, already-validated order. |
+| P15 | Document targeting and duplicate attachment names | Order/BOL/item correlation, multiple targets, deferred matches and existing attachments in `Documents.Tests.ps1`. |
+| P16 | PDF payload and document refusal | PDF signature, item/name requirements, request fields and refused-upload behavior. No downstream document-storage proof. |
+| P17 | Dry runs and idle jobs | Planning/no-send behavior for BOLs and documents, plus idle logs. Native order dry runs still require a guarded test database. |
+
+The following are acceptance cases or implementation gaps, not green local tests:
+
+| ID | Scenario | Remaining work |
+|---|---|---|
+| A01 | A definitive already-validated/locked update rejection finishes the payload | Not implemented. Capture the provider discriminator, then test done/hash suppression with a rejection reason. An arbitrary400 is not sufficient evidence. |
+| A02 | Changed BOL data before versus after remote validation | Joint acceptance test: accepted correction before the lock, definitive rejection after it, exact response and unchanged remote data on refusal. |
+| A03 | Identical acknowledgment retry versus a later changed correction | Local behavior is covered above; remote idempotency and validation timing still need destination evidence. |
+| A04 | Remote reset with unchanged data and existing documents | No reset detector or reset-generation handling. Receipt expiry is not a reset signal. |
+| A05 | Incoming changes after initial staging | Not applied to an existing native order. Test and define a separate update policy before adding that behavior. |
+| A06 | Documents before any matching remote BOL data | The current planner defers them. A different correlation contract is needed for an unrestricted documents-first flow. |
+| A07 | Paperwork preservation, source reporting and competing user applications | Destination-side acceptance evidence, outside the mocked module suite. |
+| A08 | Credential disable or endpoint outage through receipt expiry | Real destination/auth recovery and caller-query reselection tests. Local failures do not prove recovery after an arbitrary outage duration. |
+| A09 | All operational load shapes and lifecycle variants | Synthetic native test fixtures for representative pickup/drop/product combinations, incomplete closeout, cancellations, late changes and billing exceptions. |
+
+A completed receipt means no more action for that retained payload. A future terminal-refusal rule
+must say when the update was rejected rather than applied. It must not turn authentication,
+throttling, malformed data or uncertain delivery into apparent success. Once a receipt expires,
+the source query may select the same unchanged order again, including at a stalled inclusive cursor.

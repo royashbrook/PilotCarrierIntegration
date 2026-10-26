@@ -210,4 +210,60 @@ Describe 'sending one completion' {
     Mock Set-PilotBol -ModuleName PilotCarrierIntegration { [pscustomobject]@{ status = 'error'; data = $null } }
     (Send $batch $session).note | Should -Be 'turned down: error'
   }
+  It 'does not finish a successful reply for another order' {
+    Mock Set-PilotBol -ModuleName PilotCarrierIntegration {
+      $reply = Answer 4 $true
+      $reply.data.payload.dispatchOrderId = 999
+      $reply
+    }
+    (Send $batch $session).done | Should -BeFalse
+  }
+  It 'does not finish before Pilot returns Kiosked' {
+    Mock Set-PilotBol -ModuleName PilotCarrierIntegration { Answer 2 $true }
+    (Send $batch $session).done | Should -BeFalse
+  }
+  It 'keeps an ordinary HTTP <Code> refusal pending' -TestCases @(
+    @{ Code = 400 }, @{ Code = 404 }, @{ Code = 409 }, @{ Code = 422 }
+  ) {
+    param($Code)
+    $global:PcSendFailure = [Microsoft.PowerShell.Commands.HttpResponseException]::new(
+      'synthetic refusal', [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]$Code))
+    Mock Set-PilotBol -ModuleName PilotCarrierIntegration { throw $global:PcSendFailure }
+    $outcome = Send $batch $session
+    $outcome.done | Should -BeFalse
+    $outcome.note | Should -BeLike "turned down, HTTP $Code*"
+  }
+  It 'does not mistake input-validation text for an already-validated order' {
+    $exception = [Microsoft.PowerShell.Commands.HttpResponseException]::new(
+      'synthetic refusal', [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]400))
+    $global:PcSendFailure = [Management.Automation.ErrorRecord]::new(
+      $exception, 'SyntheticBadInput', [Management.Automation.ErrorCategory]::InvalidData, $null)
+    $global:PcSendFailure.ErrorDetails = [Management.Automation.ErrorDetails]::new(
+      '{"status":"error","message":"validation failed: BOL must be numeric"}')
+    Mock Set-PilotBol -ModuleName PilotCarrierIntegration { throw $global:PcSendFailure }
+    $outcome = Send $batch $session
+    $outcome.done | Should -BeFalse
+    $outcome.note | Should -BeLike '*BOL must be numeric*'
+  }
+  It 'propagates HTTP <Code> authentication, throttling and server errors unchanged' -TestCases @(
+    @{ Code = 401 }, @{ Code = 403 }, @{ Code = 429 }, @{ Code = 500 }, @{ Code = 503 }
+  ) {
+    param($Code)
+    $global:PcSendFailure = [Microsoft.PowerShell.Commands.HttpResponseException]::new(
+      'synthetic failure', [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]$Code))
+    Mock Set-PilotBol -ModuleName PilotCarrierIntegration { throw $global:PcSendFailure }
+    $caught = $null
+    try { $null = Send $batch $session } catch { $caught = $_.Exception }
+    [object]::ReferenceEquals($caught, $global:PcSendFailure) | Should -BeTrue
+  }
+  It 'propagates the original timeout instead of declaring completion' {
+    $global:PcSendFailure = [TimeoutException]::new('synthetic timeout')
+    Mock Set-PilotBol -ModuleName PilotCarrierIntegration { throw $global:PcSendFailure }
+    $caught = $null
+    try { $null = Send $batch $session } catch { $caught = $_.Exception }
+    [object]::ReferenceEquals($caught, $global:PcSendFailure) | Should -BeTrue
+  }
+  AfterEach {
+    Remove-Variable PcSendFailure -Scope Global -ErrorAction SilentlyContinue
+  }
 }
