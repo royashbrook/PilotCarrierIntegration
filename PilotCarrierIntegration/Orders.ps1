@@ -75,13 +75,13 @@ function ConvertFrom-PilotOrder {
   if (-not $items.Count) {
     throw "Pilot order $($Record.dispatchOrderId) has no active dispatchOrderItems."
   }
-  if (-not $Record.deliveryWindowStartDateTime -or -not $Record.deliveryWindowEndDateTime) {
-    throw "Pilot order $($Record.dispatchOrderId) has no complete delivery window."
+  if (-not $Record.scheduledStartDateTime -or -not $Record.scheduledEndDateTime) {
+    throw "Pilot order $($Record.dispatchOrderId) has no complete scheduled window."
   }
-  $deliveryWindowStart = [datetime]$Record.deliveryWindowStartDateTime
-  $deliveryWindowEnd = [datetime]$Record.deliveryWindowEndDateTime
+  $deliveryWindowStart = [datetime]$Record.scheduledStartDateTime
+  $deliveryWindowEnd = [datetime]$Record.scheduledEndDateTime
   if ($deliveryWindowEnd -le $deliveryWindowStart) {
-    throw "Pilot order $($Record.dispatchOrderId) delivery window must end after it starts."
+    throw "Pilot order $($Record.dispatchOrderId) scheduled window must end after it starts."
   }
 
   $stopsByKey = [ordered]@{}
@@ -243,15 +243,15 @@ function ConvertFrom-PilotOrder {
 }
 
 # why a Pilot order is not staged this run, or nothing when it is a good load: a status in
-# poll.include_statuses (Scheduled, 2, by default), a delivery window that ends after it starts, and at
+# poll.include_statuses (Scheduled, 2, by default), a scheduled window that ends after it starts, and at
 # least one active item, every one with gallons. an order that is not good yet stays in Pilot and is read
 # again next run
 function Get-PilotOrderSkipReason {
   param([Parameter(Mandatory)]$Record, [int[]]$Include = @(2))
   if (-not $Record.dispatchOrderId) { return 'no dispatchOrderId' }
   if ([int]$Record.dispatchOrderStatusTypeId -notin $Include) { return "status $($Record.dispatchOrderStatusTypeId) $($Record.dispatchOrderStatusTypeName)".Trim() }
-  if (-not $Record.deliveryWindowStartDateTime -or -not $Record.deliveryWindowEndDateTime) { return 'no delivery window' }
-  if ([datetime]$Record.deliveryWindowEndDateTime -le [datetime]$Record.deliveryWindowStartDateTime) { return 'delivery window ends before it starts' }
+  if (-not $Record.scheduledStartDateTime -or -not $Record.scheduledEndDateTime) { return 'no scheduled window' }
+  if ([datetime]$Record.scheduledEndDateTime -le [datetime]$Record.scheduledStartDateTime) { return 'scheduled window ends before it starts' }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
   if (-not $items.Count) { return 'no active items' }
   $empty = @($items | Where-Object { $null -eq $_.gallons -or [decimal]$_.gallons -le 0 })
