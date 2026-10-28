@@ -457,6 +457,21 @@ Describe 'direct TMW DataExchange staging' {
     Skip-PilotOrder (Join-Path $dir 'cache') 10877998 'status 4'
     (Get-Content (Join-Path $dir 'cache/10877998.json') -Raw | ConvertFrom-Json).PSObject.Properties.Name | Should -Not -Contain 'pilot'
   }
+  It 'keeps no Pilot record for an order TMW already had, since TMW was not built from it' {
+    Mock Write-Log
+    Mock Write-TmwOrders { @([pscustomobject]@{ ok = $true; action = 'EXISTS'; pilot_order_id = '10877997'; order_number = '10686900'; edistate = 10 }) }
+    $changed = $canonical | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+    $changed.raw.dispatchOrderItems[0].gallons = 9999
+    $dir = Join-Path $TestDrive 'exists-job'
+    $plan = Join-Path $dir 'plan.xml'
+    Save-PilotOrderPlan -Data @($changed) -Options @{ Path = $plan }
+    Send-PilotOrderPlan -Path $plan -Options @{ Settings = @{ directory = $dir; tmw = @{ connection_string = 'unused' } } }
+    $kept = Get-Content (Join-Path $dir 'cache/10877997.json') -Raw | ConvertFrom-Json
+    $kept.state | Should -Be 'staged'
+    $kept.tmw_order | Should -Be '10686900'
+    $kept.PSObject.Properties.Name | Should -Not -Contain 'pilot'
+    $kept.PSObject.Properties.Name | Should -Not -Contain 'references'
+  }
 }
 }
 

@@ -997,7 +997,9 @@ function Send-PilotOrderPlan {
   $results = @(Write-TmwOrders -Orders $orders -Cfg $cfg -ConnectionString $cfg.tmw.connection_string -Commit:$commit)
   $byId = @{}; foreach ($order in $orders) { $byId[[string]$order.pilotOrderId] = $order }
   foreach ($result in $results) {
-    if ($result.ok -and $commit) { Set-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $result.pilot_order_id 'staged' $result.order_number $byId[[string]$result.pilot_order_id] }
+    # only a CREATED order was built from this record; EXISTS leaves TMW as it was, from an earlier one
+    $source = if ($result.action -eq 'CREATED') { $byId[[string]$result.pilot_order_id] }
+    if ($result.ok -and $commit) { Set-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $result.pilot_order_id 'staged' $result.order_number $source }
     if ($result.ok) { Write-Log ("{0,-7}: {1}: TMW order {2}, state {3}" -f $result.action, $result.pilot_order_id, $result.order_number, $result.edistate) }
     else { Write-Log ("Failed : {0} after {1} attempt(s): {2}" -f $result.pilot_order_id, $result.attempts, $result.error) }
   }
