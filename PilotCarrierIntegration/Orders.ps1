@@ -85,6 +85,8 @@ function ConvertFrom-PilotOrder {
   }
 
   $stopsByKey = [ordered]@{}
+  # the reference rows this order used, kept with it when it is staged
+  $used = [ordered]@{ terminals = @{}; locations = @{}; contracts = @{} }
   foreach ($item in $items) {
     $terminalId = $item.lineOfOperationsSystemId
     $locationId = if ($null -ne $item.locationSystemId) {
@@ -111,6 +113,9 @@ function ConvertFrom-PilotOrder {
     $terminal = if ($null -ne $terminalId) { $References.terminals[[string]$terminalId] }
     $location = $References.locations[[string]$locationId]
     $contract = if ($null -ne $item.looSystemId) { $References.contracts[[string]$item.looSystemId] }
+    if ($terminal) { $used.terminals[[string]$terminalId] = $terminal }
+    if ($location) { $used.locations[[string]$locationId] = $location }
+    if ($contract) { $used.contracts[[string]$item.looSystemId] = $contract }
     $supplierName = if ($contract.contractName) {
       [string]$contract.contractName
     } else {
@@ -236,6 +241,7 @@ function ConvertFrom-PilotOrder {
     kiosked = [bool]$Record.kiosked -or [int]$Record.dispatchOrderStatusTypeId -eq 4
     stops = $orderedStops
     raw = $Record
+    references = [pscustomobject]$used
   }
 }
 
@@ -281,15 +287,18 @@ function Get-PilotOrderCache([string]$CacheDir, $Id) {
   if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
 }
 
-function Set-PilotOrderCache([string]$CacheDir, $Id, [string]$State, [string]$Detail) {
+# a staged order keeps the Pilot record and reference rows it was staged from, written once
+function Set-PilotOrderCache([string]$CacheDir, $Id, [string]$State, [string]$Detail, $Order) {
   if (-not $CacheDir) { return }
   $null = New-Item -ItemType Directory -Force $CacheDir
-  [pscustomobject][ordered]@{
+  $entry = [ordered]@{
     dispatch_order_id = [string]$Id; state = $State
     reason = if ($State -eq 'skipped') { $Detail } else { $null }
     tmw_order = if ($State -eq 'staged') { $Detail } else { $null }
     updated_at = [datetime]::UtcNow.ToString('o')
-  } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $CacheDir "$Id.json")
+  }
+  if ($Order) { $entry.pilot = $Order.raw; $entry.references = $Order.references }
+  [pscustomobject]$entry | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $CacheDir "$Id.json")
 }
 
 # log a skip only when it is new or its reason changed, so a waiting order is one line, not one a run
@@ -986,8 +995,11 @@ function Send-PilotOrderPlan {
   $commit = -not $Options.Settings.dry_run
   Write-Log "Stage  : $($orders.Count) order(s), $(if ($commit) { 'commit' } else { 'validate only' })"
   $results = @(Write-TmwOrders -Orders $orders -Cfg $cfg -ConnectionString $cfg.tmw.connection_string -Commit:$commit)
+  $byId = @{}; foreach ($order in $orders) { $byId[[string]$order.pilotOrderId] = $order }
   foreach ($result in $results) {
-    if ($result.ok -and $commit) { Set-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $result.pilot_order_id 'staged' $result.order_number }
+    # only a CREATED order was built from this record; EXISTS leaves TMW as it was, from an earlier one
+    $source = if ($result.action -eq 'CREATED') { $byId[[string]$result.pilot_order_id] }
+    if ($result.ok -and $commit) { Set-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $result.pilot_order_id 'staged' $result.order_number $source }
     if ($result.ok) { Write-Log ("{0,-7}: {1}: TMW order {2}, state {3}" -f $result.action, $result.pilot_order_id, $result.order_number, $result.edistate) }
     else { Write-Log ("Failed : {0} after {1} attempt(s): {2}" -f $result.pilot_order_id, $result.attempts, $result.error) }
   }

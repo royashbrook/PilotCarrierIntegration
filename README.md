@@ -104,7 +104,10 @@ to accept or reject in TMW.
 - `wraProductLongName` supplies the freight description. `productName` and `wraProductDescription`
   are ignored. A blank long name stages as `NO PRODUCT`.
 - The cache folder (`cache`, default `cache`) keeps one file per Pilot order: `staged` with its TMW
-  order, or `skipped` with the reason. A staged order is passed over before anything else, and a skip
+  order, or `skipped` with the reason. A staged order's file also keeps the Pilot order record and
+  the location, terminal and contract rows it was staged from, written once when the order is
+  created in TMW, so what Pilot sent can be checked later. An order TMW already had keeps no record,
+  since TMW was not built from this read. A staged order is passed over before anything else, and a skip
   reason is logged only when it is new or changes. An order file goes `keep_days` (7 by default)
   after its last update, by the date inside it. A dry run keeps no cache.
 - Pilot's location, terminal and contract lists only fill in names and addresses, and TMW maps each
