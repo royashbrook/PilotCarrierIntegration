@@ -439,6 +439,24 @@ Describe 'direct TMW DataExchange staging' {
     (New-DxArchivePlan $back $cfg $now).fingerprint | Should -Be (New-DxArchivePlan $canonical $cfg $now).fingerprint
     (New-TmwOrderCommand $back $cfg -Now $now).sql | Should -Be (New-TmwOrderCommand $canonical $cfg -Now $now).sql
   }
+  It 'keeps the Pilot record and reference rows a staged order was staged from, and none for a skip' {
+    Mock Write-Log
+    Mock Write-TmwOrders { @([pscustomobject]@{ ok = $true; action = 'CREATED'; pilot_order_id = '10877997'; order_number = '10686900'; edistate = 10 }) }
+    $dir = Join-Path $TestDrive 'payload-job'
+    $plan = Join-Path $dir 'plan.xml'
+    Save-PilotOrderPlan -Data @($canonical) -Options @{ Path = $plan }
+    Send-PilotOrderPlan -Path $plan -Options @{ Settings = @{ directory = $dir; tmw = @{ connection_string = 'unused' } } }
+    $kept = Get-Content (Join-Path $dir 'cache/10877997.json') -Raw | ConvertFrom-Json
+    $kept.state | Should -Be 'staged'
+    $kept.tmw_order | Should -Be '10686900'
+    $kept.pilot.dispatchOrderId | Should -Be 10877997
+    $kept.pilot.dispatchOrderItems[0].wraProductLongName | Should -Be 'Bio Diesel B99'
+    $kept.references.terminals.'14673'.name | Should -Be 'EXAMPLE TERMINAL'
+    $kept.references.locations.'55979' | Should -Not -BeNullOrEmpty
+    $kept.references.contracts.'10180'.contractName | Should -Be 'CARGILL'
+    Skip-PilotOrder (Join-Path $dir 'cache') 10877998 'status 4'
+    (Get-Content (Join-Path $dir 'cache/10877998.json') -Raw | ConvertFrom-Json).PSObject.Properties.Name | Should -Not -Contain 'pilot'
+  }
 }
 }
 
