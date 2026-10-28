@@ -28,11 +28,22 @@ Describe 'Pilot order translation' {
     $canonical.stops[0].freight[0].supplierDescription | Should -Be 'CARGILL INCORPORATED'
     $canonical.stops[0].freight[0].commodityCode | Should -Be 'B99-UL'
   }
-  It 'describes the commodity with the WRA long name only' {
-    $canonical.stops[0].freight[0].commodityName | Should -Be 'Bio Diesel B99'
+  It 'describes the commodity with the WRA long name and description, never productName' {
+    $canonical.stops[0].freight[0].commodityName | Should -Be 'Bio Diesel B99 / B99'
     $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $raw.dispatchOrderItems[0].wraProductDescription = ''
+    (ConvertFrom-PilotOrder $raw $cfg $references).stops[0].freight[0].commodityName | Should -Be 'Bio Diesel B99'
     $raw.dispatchOrderItems[0].wraProductLongName = ''
     (ConvertFrom-PilotOrder $raw $cfg $references).stops[0].freight[0].commodityName | Should -Be 'NO PRODUCT'
+  }
+  It 'keeps two WRA products that share a long name apart' {
+    $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $second = $raw.dispatchOrderItems[0] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $second.dispatchOrderItemId = 11888002
+    $raw.dispatchOrderItems[0].wraProductLongName = 'Diesel'; $raw.dispatchOrderItems[0].wraProductDescription = 'DSL'
+    $second.wraProductLongName = 'Diesel'; $second.wraProductDescription = 'DSL-AS'
+    $raw.dispatchOrderItems = @($raw.dispatchOrderItems[0], $second)
+    @((ConvertFrom-PilotOrder $raw $cfg $references).stops[0].freight.commodityName) | Should -Be @('Diesel / DSL', 'Diesel / DSL-AS')
   }
   It 'builds a pickup and delivery with freight on both stops' {
     @($canonical.stops).Count | Should -Be 2
@@ -168,6 +179,7 @@ Describe 'Pilot order translation' {
     $blankLocation.description = ''
     $blankOrder = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $blankOrder.dispatchOrderItems[0].wraProductLongName = ''
+    $blankOrder.dispatchOrderItems[0].wraProductDescription = ''
     $blank = [pscustomobject]@{
       locations = @{ '55979' = $blankLocation }
       terminals = @{ '14673' = $blankTerminal }
@@ -306,7 +318,7 @@ Describe 'direct TMW DataExchange staging' {
     @($archive.rows | Where-Object { $_.fields.dx_field001.Trim() -eq '03' }).Count | Should -Be 2
     @($archive.rows | Where-Object { $_.fields.dx_field001.Trim() -eq '04' }).Count | Should -Be 2
     $freight = @($archive.rows | Where-Object { $_.fields.dx_field001.Trim() -eq '04' })[0]
-    $freight.fields.dx_field013.Trim() | Should -Be 'Bio Diesel B99'
+    $freight.fields.dx_field013.Trim() | Should -Be 'Bio Diesel B99 / B99'
     $freight.fields.dx_field014 | Should -Be '        '
     $pickupAddress = @($archive.rows | Where-Object { $_.fields.dx_field001.Trim() -eq '06' -and $_.fields.dx_field003.Trim() -eq 'ST' })[0]
     $pickupAddress.fields.dx_field005.Trim() | Should -Be '100 TERMINAL WAY'
@@ -346,6 +358,8 @@ Describe 'direct TMW DataExchange staging' {
     $command.sql | Should -Match 'sp_getapplock'
     $command.sql | Should -Match 'dx_add_neworder_stop'
     $multiCommand.sql | Should -Match 'dx_add_neworder_freight_to_stop'
+    # the freight-to-stop proc copies the count unit into fgt_unit, so a PCS here arrived as PCS in TMW
+    $multiCommand.sql | Should -Match "dx_add_neworder_freight_to_stop 'N', @stop_number, 'UNKNOWN', @cmd\d+_\d+, 0, 'LBS', 0, '', @qty\d+_\d+, 'GAL'"
     $command.sql | Should -Match 'dx_create_order_from_stops'
     $command.sql | Should -Match 'dx_add_refnumber_to_order'
     $command.sql | Should -Match 'dx_add_refnumber_to_freight'
@@ -411,7 +425,7 @@ Describe 'direct TMW DataExchange staging' {
   It 'is parameterized and does not embed Pilot data in SQL text' {
     $command.sql | Should -Not -Match '10877997|Bio Diesel|14673|55979'
     @($command.parameters.value) | Should -Contain '10877997'
-    @($command.parameters.value) | Should -Contain 'Bio Diesel B99'
+    @($command.parameters.value) | Should -Contain 'Bio Diesel B99 / B99'
   }
   It 'drops an order already in TMW without touching it' {
     $command.sql | Should -Match 'r.ref_number = @pilot_id'

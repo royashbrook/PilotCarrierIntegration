@@ -101,8 +101,13 @@ to accept or reject in TMW.
 - `scheduledStartDateTime` and `scheduledEndDateTime` supply the TMW stop earliest/latest windows.
   `deliveryWindowStartDateTime` and `deliveryWindowEndDateTime` are ignored, including when populated.
   Missing or reversed scheduled timestamps are not replaced with those optional delivery fields.
-- `wraProductLongName` supplies the freight description. `productName` and `wraProductDescription`
-  are ignored. A blank long name stages as `NO PRODUCT`.
+- `wraProductLongName / wraProductDescription` supplies the freight description, for example
+  `Regular Unleaded / UNL`. The pair is the store's tank product: `productName` repeats across
+  tanks, and one long name (`Diesel`) covers two WRA products (`DSL`, `DSL-AS`). `productName` is
+  ignored. A blank part is left out, and both blank stage as `NO PRODUCT`.
+- Every freight line stages in gallons. TMW's `dx_add_neworder_freight_to_stop` copies the count
+  unit into the freight unit, so added lines pass a blank count unit and take the fuel default,
+  like a stop's first line.
 - The cache folder (`cache`, default `cache`) keeps one file per Pilot order: `staged` with its TMW
   order, or `skipped` with the reason. A staged order's file also keeps the Pilot order record and
   the location, terminal and contract rows it was staged from, written once when the order is

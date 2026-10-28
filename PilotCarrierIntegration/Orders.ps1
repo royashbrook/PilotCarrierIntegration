@@ -151,9 +151,11 @@ function ConvertFrom-PilotOrder {
     $terminalAddress = Complete-PilotAddress $terminalAddress
     $locationAddress = Complete-PilotAddress $locationAddress
 
-    # productName is not unique per product, so dispatch maps commodities from the WRA long name.
-    $commodityName = if ($item.wraProductLongName) {
-      $item.wraProductLongName
+    # dispatch maps commodities from the WRA long name and description together: productName repeats
+    # across tanks, and one long name ("Diesel") covers two WRA products (DSL, DSL-AS)
+    $wraName = @($item.wraProductLongName, $item.wraProductDescription | Where-Object { $_ }) -join ' / '
+    $commodityName = if ($wraName) {
+      $wraName
     } else {
       'NO PRODUCT'
     }
@@ -719,7 +721,8 @@ function New-TmwOrderCommand {
         (New-TmwParameter "@supid${stopIndex}_$freightIndex" 'VarChar' 30 ([string]$item.supplierContractId))
         (New-TmwParameter "@supname${stopIndex}_$freightIndex" 'VarChar' 30 ([string]$item.supplierName).Substring(0, [Math]::Min(30, ([string]$item.supplierName).Length)))
       )) { [void]$parameters.Add($p) }
-      $sql.Add("  exec @ret = dbo.dx_add_neworder_freight_to_stop 'N', @stop_number, 'UNKNOWN', @cmd${stopIndex}_$freightIndex, 0, 'LBS', 0, 'PCS', @qty${stopIndex}_$freightIndex, 'GAL', 'OID', @oid${stopIndex}_$freightIndex, 0, '', 0, 0, '', 0, '', 0, '', 0, '', 0, '', @freight_number output;")
+      # this proc writes fgt_unit from the count unit; blank leaves it to the fuel default (GAL), like a stop's first line
+      $sql.Add("  exec @ret = dbo.dx_add_neworder_freight_to_stop 'N', @stop_number, 'UNKNOWN', @cmd${stopIndex}_$freightIndex, 0, 'LBS', 0, '', @qty${stopIndex}_$freightIndex, 'GAL', 'OID', @oid${stopIndex}_$freightIndex, 0, '', 0, 0, '', 0, '', 0, '', 0, '', 0, '', @freight_number output;")
       $sql.Add("  if @ret < 1 throw 50011, 'dx_add_neworder_freight_to_stop failed', 1;")
       $sql.Add("  insert @scope values ($stopIndex, $freightIndex, @stop_number, @freight_number);")
     }
