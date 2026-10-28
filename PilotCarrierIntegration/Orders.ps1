@@ -146,11 +146,8 @@ function ConvertFrom-PilotOrder {
     $terminalAddress = Complete-PilotAddress $terminalAddress
     $locationAddress = Complete-PilotAddress $locationAddress
 
-    $commodityName = if ($item.productName) {
-      $item.productName
-    } elseif ($item.wraProductDescription) {
-      $item.wraProductDescription
-    } elseif ($item.wraProductLongName) {
+    # productName is not unique per product, so dispatch maps commodities from the WRA long name.
+    $commodityName = if ($item.wraProductLongName) {
       $item.wraProductLongName
     } else {
       'NO PRODUCT'

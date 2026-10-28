@@ -28,6 +28,12 @@ Describe 'Pilot order translation' {
     $canonical.stops[0].freight[0].supplierDescription | Should -Be 'CARGILL INCORPORATED'
     $canonical.stops[0].freight[0].commodityCode | Should -Be 'B99-UL'
   }
+  It 'describes the commodity with the WRA long name only' {
+    $canonical.stops[0].freight[0].commodityName | Should -Be 'Bio Diesel B99'
+    $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $raw.dispatchOrderItems[0].wraProductLongName = ''
+    (ConvertFrom-PilotOrder $raw $cfg $references).stops[0].freight[0].commodityName | Should -Be 'NO PRODUCT'
+  }
   It 'builds a pickup and delivery with freight on both stops' {
     @($canonical.stops).Count | Should -Be 2
     @($canonical.stops.type) | Should -Be @('PU', 'DR')
@@ -161,9 +167,7 @@ Describe 'Pilot order translation' {
     $blankLocation = $references.locations['55979'] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $blankLocation.description = ''
     $blankOrder = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
-    $blankOrder.dispatchOrderItems[0].productName = ''
-    $blankOrder.dispatchOrderItems[0] | Add-Member -NotePropertyName wraProductDescription -NotePropertyValue ''
-    $blankOrder.dispatchOrderItems[0] | Add-Member -NotePropertyName wraProductLongName -NotePropertyValue ''
+    $blankOrder.dispatchOrderItems[0].wraProductLongName = ''
     $blank = [pscustomobject]@{
       locations = @{ '55979' = $blankLocation }
       terminals = @{ '14673' = $blankTerminal }
@@ -302,7 +306,7 @@ Describe 'direct TMW DataExchange staging' {
     @($archive.rows | Where-Object { $_.fields.dx_field001.Trim() -eq '03' }).Count | Should -Be 2
     @($archive.rows | Where-Object { $_.fields.dx_field001.Trim() -eq '04' }).Count | Should -Be 2
     $freight = @($archive.rows | Where-Object { $_.fields.dx_field001.Trim() -eq '04' })[0]
-    $freight.fields.dx_field013.Trim() | Should -Be 'ULSD #2 W/ 99% BIO'
+    $freight.fields.dx_field013.Trim() | Should -Be 'Bio Diesel B99'
     $freight.fields.dx_field014 | Should -Be '        '
     $pickupAddress = @($archive.rows | Where-Object { $_.fields.dx_field001.Trim() -eq '06' -and $_.fields.dx_field003.Trim() -eq 'ST' })[0]
     $pickupAddress.fields.dx_field005.Trim() | Should -Be '100 TERMINAL WAY'
@@ -405,9 +409,9 @@ Describe 'direct TMW DataExchange staging' {
     $command.sql | Should -Match 'DX archive detail count mismatch'
   }
   It 'is parameterized and does not embed Pilot data in SQL text' {
-    $command.sql | Should -Not -Match '10877997|ULSD #2|14673|55979'
+    $command.sql | Should -Not -Match '10877997|Bio Diesel|14673|55979'
     @($command.parameters.value) | Should -Contain '10877997'
-    @($command.parameters.value) | Should -Contain 'ULSD #2 W/ 99% BIO'
+    @($command.parameters.value) | Should -Contain 'Bio Diesel B99'
   }
   It 'drops an order already in TMW without touching it' {
     $command.sql | Should -Match 'r.ref_number = @pilot_id'

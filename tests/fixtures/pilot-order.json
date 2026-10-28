@@ -28,6 +28,8 @@
         "productName": "ULSD #2 W/ 99% BIO",
         "productSystemId": 915,
         "wraProductSystemId": 915,
+        "wraProductLongName": "Bio Diesel B99",
+        "wraProductDescription": "B99",
         "productTypeSystemId": 15,
         "terminalMarketId": 315,
         "customerLocationSystemId": null,
