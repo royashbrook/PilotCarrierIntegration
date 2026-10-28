@@ -101,6 +101,8 @@ to accept or reject in TMW.
 - `scheduledStartDateTime` and `scheduledEndDateTime` supply the TMW stop earliest/latest windows.
   `deliveryWindowStartDateTime` and `deliveryWindowEndDateTime` are ignored, including when populated.
   Missing or reversed scheduled timestamps are not replaced with those optional delivery fields.
+- `wraProductLongName` supplies the freight description. `productName` and `wraProductDescription`
+  are ignored. A blank long name stages as `NO PRODUCT`.
 - The cache folder (`cache`, default `cache`) keeps one file per Pilot order: `staged` with its TMW
   order, or `skipped` with the reason. A staged order is passed over before anything else, and a skip
   reason is logged only when it is new or changes. An order file goes `keep_days` (7 by default)
