@@ -125,6 +125,8 @@ One bad active item still holds the whole order. Regex evaluation has a one-seco
 Pre-lookup checks can use only their available record/item/create data, not later reference or
 derived values. The reference join keys have the same restriction. Order-level checks cannot
 depend on an item. Validation, reference joins and aggregation share the available input context.
+Reference-cache miss checks resolve the same configured join fields, so a new mapped ID refreshes
+only its list and is reused once present; cache age and refresh policy are unchanged.
 Vendor order/item identity rows are shown in the table but cannot be overridden: replay, cache
 keys and outbound routing are operational contracts, not configurable payload formatting.
 

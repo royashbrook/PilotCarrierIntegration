@@ -17,14 +17,15 @@ function New-PilotReferenceIndex {
 # Each list is kept in the cache folder and read from Pilot again only when an order names an id the
 # kept copy lacks, or when the kept copy is older than keep_days. Without a cache folder (a dry run, a test) the lists are read every time.
 function Get-PilotReferenceData {
-  param($Session, [AllowEmptyCollection()]$Records = @(), [string]$CacheDir, [int]$KeepDays = 7)
+  param($Session, [AllowEmptyCollection()]$Records = @(), [string]$CacheDir, [int]$KeepDays = 7, $Mapping, $Cfg)
+  if (-not $Mapping) { $Mapping = Read-PilotOrderMapping $Cfg }
   $lists = @(
     @{ name = 'location'; key = 'locationSystemId'; read = { Get-PilotLocation -Session $Session }
-      ids = { $_.dispatchOrderItems.locationSystemId } }
+      field = 'Delivery.locationCode' }
     @{ name = 'terminal'; key = 'terminalId'; read = { Get-PilotTerminal -Session $Session }
-      ids = { $_.dispatchOrderItems.lineOfOperationsSystemId } }
+      field = 'Pickup.locationCode' }
     @{ name = 'contract'; key = 'contractSystemId'; read = { Get-PilotContract -Session $Session }
-      ids = { $_.dispatchOrderItems.looSystemId } }
+      field = 'Freight.supplierContractId' }
   )
   $data = [ordered]@{}
   foreach ($list in $lists) {
@@ -34,7 +35,13 @@ function Get-PilotReferenceData {
     $readAt = if ($kept -isnot [array]) { $kept.read_at }
     $rows = if ($readAt -and ([datetime]$readAt).ToUniversalTime() -gt [datetime]::UtcNow.AddDays(-$KeepDays)) { @($kept.rows) } else { $null }
     $index = if ($null -ne $rows) { New-PilotReferenceIndex $rows $list.key } else { $null }
-    $needed = @($Records | ForEach-Object $list.ids | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+    $needed = @($Records | ForEach-Object {
+      $record = $_
+      foreach ($item in @($record.dispatchOrderItems)) {
+        $value = Get-PilotCheckValue $Mapping @{ field = $list.field } @{ record = $record; item = $item; cfg = $Cfg }
+        foreach ($id in $value) { $id }
+      }
+    } | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
     if ($null -eq $index -or @($needed | Where-Object { -not $index.ContainsKey($_) }).Count) {
       $rows = @(& $list.read)
       $index = New-PilotReferenceIndex $rows $list.key
@@ -263,7 +270,7 @@ function Receive-PilotOrders {
   }
   Write-Log "Pilot  : $($records.Count) orders read, $staged already staged, $skipped skipped, $($open.Count) to stage"
   if (-not $open.Count) { return }
-  $references = Get-PilotReferenceData $Session $open $cacheDir (Get-PilotKeepDays $Cfg)
+  $references = Get-PilotReferenceData $Session $open $cacheDir (Get-PilotKeepDays $Cfg) $mapping $Cfg
 
   foreach ($record in $open) {
     try {

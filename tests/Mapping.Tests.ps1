@@ -100,6 +100,38 @@ Describe 'caller-owned mapping configuration' {
       $order.references.contracts.'10180'.contractName | Should -Be 'CARGILL'
     }
   }
+  It 'refreshes a fresh reference cache for a remapped <list> ID and then reuses it' -ForEach @(
+    @{ list = 'contract'; field = 'Freight.supplierContractId'; key = 'contractSystemId'; read = 'Get-PilotContract' },
+    @{ list = 'terminal'; field = 'Pickup.locationCode'; key = 'terminalId'; read = 'Get-PilotTerminal' },
+    @{ list = 'location'; field = 'Delivery.locationCode'; key = 'locationSystemId'; read = 'Get-PilotLocation' }
+  ) {
+    InModuleScope PilotCarrierIntegration -Parameters @{ c = $case; list = $list; field = $field; key = $key; read = $read } {
+      $dir = Join-Path $TestDrive $list
+      New-Item -ItemType Directory $dir | Out-Null
+      $lists = @{ location = @($c.references.locations.Values); terminal = @($c.references.terminals.Values); contract = @($c.references.contracts.Values) }
+      foreach ($name in $lists.Keys) {
+        @{ read_at = [datetime]::UtcNow.ToString('o'); rows = $lists[$name] } | ConvertTo-Json -Depth 20 | Set-Content "$dir/reference-$name.json"
+      }
+      $extra = $lists[$list][0] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $extra.$key = 20200
+      $lists[$list] += $extra
+      $map = Read-PilotOrderMapping
+      (Get-PilotMappingRow $map $field).source = 'record.referenceOverride'
+      $raw = $c.record | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $raw | Add-Member referenceOverride 20200
+      Mock Get-PilotLocation { $lists.location }
+      Mock Get-PilotTerminal { $lists.terminal }
+      Mock Get-PilotContract { $lists.contract }
+      Mock Write-Log
+      $refs = Get-PilotReferenceData ([pscustomobject]@{}) @($raw) $dir 7 $map $c.cfg
+      $refs.($list + 's')['20200'].$key | Should -Be 20200
+      $null = Get-PilotReferenceData ([pscustomobject]@{}) @($raw) $dir 7 $map $c.cfg
+      Should -Invoke $read -Times 1 -Exactly
+      foreach ($other in @('Get-PilotLocation', 'Get-PilotTerminal', 'Get-PilotContract') | Where-Object { $_ -ne $read }) { Should -Invoke $other -Times 0 -Exactly }
+      $order = ConvertFrom-PilotOrder $raw $c.cfg $refs -Mapping $map
+      $order.references.($list + 's')['20200'].$key | Should -Be 20200
+    }
+  }
   It 'refuses <name> before any Pilot read' -ForEach @(
     @{ name = 'bad regex'; old = "pattern = '\S'"; replacement = "pattern = '['" },
     @{ name = 'bad cast'; old = "cast = 'string'"; replacement = "cast = 'eval'" },
