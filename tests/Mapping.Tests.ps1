@@ -108,20 +108,20 @@ Describe 'caller-owned mapping configuration' {
     InModuleScope PilotCarrierIntegration -Parameters @{ c = $case; list = $list; field = $field; key = $key; read = $read } {
       $dir = Join-Path $TestDrive $list
       New-Item -ItemType Directory $dir | Out-Null
-      $lists = @{ location = @($c.references.locations.Values); terminal = @($c.references.terminals.Values); contract = @($c.references.contracts.Values) }
-      foreach ($name in $lists.Keys) {
-        @{ read_at = [datetime]::UtcNow.ToString('o'); rows = $lists[$name] } | ConvertTo-Json -Depth 20 | Set-Content "$dir/reference-$name.json"
+      $script:configuredCacheFixture = @{ location = @($c.references.locations.Values); terminal = @($c.references.terminals.Values); contract = @($c.references.contracts.Values) }
+      foreach ($name in $script:configuredCacheFixture.Keys) {
+        @{ read_at = [datetime]::UtcNow.ToString('o'); rows = $script:configuredCacheFixture[$name] } | ConvertTo-Json -Depth 20 | Set-Content "$dir/reference-$name.json"
       }
-      $extra = $lists[$list][0] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $extra = $script:configuredCacheFixture[$list][0] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
       $extra.$key = 20200
-      $lists[$list] += $extra
+      $script:configuredCacheFixture[$list] += $extra
       $map = Read-PilotOrderMapping
       (Get-PilotMappingRow $map $field).source = 'record.referenceOverride'
       $raw = $c.record | ConvertTo-Json -Depth 20 | ConvertFrom-Json
       $raw | Add-Member referenceOverride 20200
-      Mock Get-PilotLocation { $lists.location }
-      Mock Get-PilotTerminal { $lists.terminal }
-      Mock Get-PilotContract { $lists.contract }
+      Mock Get-PilotLocation { $script:configuredCacheFixture.location }
+      Mock Get-PilotTerminal { $script:configuredCacheFixture.terminal }
+      Mock Get-PilotContract { $script:configuredCacheFixture.contract }
       Mock Write-Log
       $refs = Get-PilotReferenceData ([pscustomobject]@{}) @($raw) $dir 7 $map $c.cfg
       $refs.($list + 's')['20200'].$key | Should -Be 20200
