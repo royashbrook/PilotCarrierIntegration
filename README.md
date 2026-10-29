@@ -101,10 +101,11 @@ to accept or reject in TMW.
 - `scheduledStartDateTime` and `scheduledEndDateTime` supply the TMW stop earliest/latest windows.
   `deliveryWindowStartDateTime` and `deliveryWindowEndDateTime` are ignored, including when populated.
   Missing or reversed scheduled timestamps are not replaced with those optional delivery fields.
-- `wraProductLongName / wraProductDescription` supplies the freight description, for example
-  `Regular Unleaded / UNL`. The pair is the store's tank product: `productName` repeats across
-  tanks, and one long name (`Diesel`) covers two WRA products (`DSL`, `DSL-AS`). `productName` is
-  ignored. A blank part is left out, and both blank stage as `NO PRODUCT`.
+- `productCode / wraProductDescription` supplies the freight description, for example
+  `91E10 / SUP` or `NO2ULS / DSL-AS`. The product code is what to lift and carries the octane. The
+  WRA product says which tank it goes in: one code can go to different tanks, and the WRA long name
+  is not enough, since `Diesel` covers `DSL` and `DSL-AS`. A blank part is left out, and both blank
+  stage as `NO PRODUCT`.
 - Every freight line stages in gallons. TMW's `dx_add_neworder_freight_to_stop` copies the count
   unit into the freight unit, so added lines pass a blank count unit and take the fuel default,
   like a stop's first line.
