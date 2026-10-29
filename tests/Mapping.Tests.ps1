@@ -85,45 +85,19 @@ Describe 'caller-owned mapping configuration' {
       $order.stops[0].freight[0].quantity | Should -Be 100
     }
   }
-  It 'uses the mapped identity for staged cache lookup as well as SQL staging' {
-    $dir = Join-Path $TestDrive 'identity'
-    New-Item -ItemType Directory $dir | Out-Null
-    $text = $defaultText.Replace("destination = 'pilotOrderId'; source = 'record.dispatchOrderId'", "destination = 'pilotOrderId'; source = 'record.sourceSystemOrderId'")
-    $text | Should -Not -Be $defaultText
-    Set-Content "$dir/custom.psd1" -Value $text
-    $cfg = $case.cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
-    $cfg | Add-Member directory $dir
-    $cfg | Add-Member order_mapping 'custom.psd1'
-    InModuleScope PilotCarrierIntegration -Parameters @{ c = $case; cfg = $cfg; dir = $dir } {
-      Mock Get-PilotOrder { @($c.record) }
-      Mock Get-PilotReferenceData { $c.references }
-      Mock Write-Log
-      Mock Write-TmwOrders { @([pscustomobject]@{ ok = $true; action = 'CREATED'; pilot_order_id = $c.record.sourceSystemOrderId; order_number = 'synthetic-tmw'; edistate = 10 }) }
-      $orders = @(Receive-PilotOrders $cfg ([pscustomobject]@{}))
-      $orders[0].pilotOrderId | Should -Be $c.record.sourceSystemOrderId
-      $path = Join-Path $dir 'out/orders.xml'
-      Save-PilotOrderPlan $orders @{ Path = $path }
-      Send-PilotOrderPlan $path @{ Settings = ($cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable) }
-      (Get-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $c.record.sourceSystemOrderId).state | Should -Be 'staged'
-      @(Receive-PilotOrders $cfg ([pscustomobject]@{})).Count | Should -Be 0
-      Should -Invoke Get-PilotReferenceData -Times 1 -Exactly
-    }
-  }
-  It 'also keys a post-lookup translation failure by the mapped identity' {
-    $dir = Join-Path $TestDrive 'translation-failure'
-    New-Item -ItemType Directory $dir | Out-Null
-    Set-Content "$dir/custom.psd1" -Value $defaultText.Replace("destination = 'pilotOrderId'; source = 'record.dispatchOrderId'", "destination = 'pilotOrderId'; source = 'record.sourceSystemOrderId'")
-    $cfg = $case.cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
-    $cfg | Add-Member directory $dir
-    $cfg | Add-Member order_mapping 'custom.psd1'
-    InModuleScope PilotCarrierIntegration -Parameters @{ c = $case; cfg = $cfg } {
-      Mock Get-PilotOrder { @($c.record) }
-      Mock Get-PilotReferenceData { $c.references }
-      Mock ConvertFrom-PilotOrder { throw 'synthetic translation refusal' }
-      Mock Write-Log
-      @(Receive-PilotOrders $cfg ([pscustomobject]@{})).Count | Should -Be 0
-      (Get-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $c.record.sourceSystemOrderId).reason | Should -Be 'synthetic translation refusal'
-      Get-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $c.record.dispatchOrderId | Should -BeNullOrEmpty
+  It 'shares context with supplier lookups and contract-ID aggregation' {
+    InModuleScope PilotCarrierIntegration -Parameters @{ c = $case } {
+      $map = Read-PilotOrderMapping
+      (Get-PilotMappingRow $map 'Freight.supplierContractId').source = 'record.sharedSupplier'
+      $raw = $c.record | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $raw | Add-Member sharedSupplier 10180
+      $raw.dispatchOrderItems[0].looSystemId = $null
+      $order = ConvertFrom-PilotOrder $raw $c.cfg $c.references -Mapping $map
+      $order.contractSystemIds | Should -Be @(10180)
+      $order.stops[0].freight[0].supplierContractId | Should -Be '10180'
+      $order.stops[0].freight[0].supplierName | Should -Be 'CARGILL'
+      $order.pilotOrderItemIds | Should -Be @('11888001')
+      $order.references.contracts.'10180'.contractName | Should -Be 'CARGILL'
     }
   }
   It 'refuses <name> before any Pilot read' -ForEach @(
@@ -133,7 +107,11 @@ Describe 'caller-owned mapping configuration' {
     @{ name = 'credential source'; old = "source = 'item.productCode'"; replacement = "source = 'cfg.pilot.client_secret'" },
     @{ name = 'connection source'; old = "source = 'item.productCode'"; replacement = "source = 'cfg.tmw.connection_string'" },
     @{ name = 'late validation source'; old = "destination = 'productCode'; source = 'item.productCode'"; replacement = "destination = 'productCode'; source = 'terminal.name'" },
+    @{ name = 'circular join source'; old = "source = 'item.looSystemId'"; replacement = "source = 'contract.contractSystemId'" },
     @{ name = 'item-dependent order identity'; old = "destination = 'pilotOrderId'; source = 'record.dispatchOrderId'"; replacement = "destination = 'pilotOrderId'; source = 'item.dispatchOrderItemId'" },
+    @{ name = 'item-dependent order window'; old = "destination = 'deliveryWindowStart'; source = 'record.scheduledStartDateTime'"; replacement = "destination = 'deliveryWindowStart'; source = 'item.scheduledStartDateTime'" },
+    @{ name = 'order identity override'; old = "destination = 'pilotOrderId'; source = 'record.dispatchOrderId'"; replacement = "destination = 'pilotOrderId'; source = 'record.sourceSystemOrderId'" },
+    @{ name = 'item identity override'; old = "destination = 'pilotOrderItemId'; source = 'item.dispatchOrderItemId'"; replacement = "destination = 'pilotOrderItemId'; source = 'item.sourceSystemOrderItemId'" },
     @{ name = 'empty source'; old = "source = 'item.productCode'"; replacement = "source = ''" },
     @{ name = 'unknown destination'; old = "destination = 'productCode'"; replacement = "destination = 'productTypo'" },
     @{ name = 'unknown check'; old = "kind = 'positive_decimal'"; replacement = "kind = 'eval'" },

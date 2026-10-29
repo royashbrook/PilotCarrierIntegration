@@ -117,14 +117,14 @@ function ConvertFrom-PilotOrder {
   }
 
   $contractIds = @(
-    $items | ForEach-Object { Get-PilotCheckValue $Mapping @{ field = 'Freight.supplierContractId' } @{ item = $_ } } |
+    $items | ForEach-Object { Get-PilotCheckValue $Mapping @{ field = 'Freight.supplierContractId' } @{ record = $Record; cfg = $Cfg; item = $_ } } |
       Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
       Sort-Object -Unique
   )
   $orderedStops = @($stopsByKey.Values | Where-Object type -eq 'PU') +
     @($stopsByKey.Values | Where-Object type -eq 'DR')
 
-  $context.context.itemIds = @($items | ForEach-Object { Get-PilotMappingValue (Get-PilotMappingRow $Mapping 'Freight.pilotOrderItemId') @{ item = $_ } })
+  $context.context.itemIds = @($items | ForEach-Object { Get-PilotMappingValue (Get-PilotMappingRow $Mapping 'Freight.pilotOrderItemId') @{ record = $Record; cfg = $Cfg; item = $_ } })
   $context.context.contractIds = $contractIds
   $context.context.kiosked = [bool]$Record.kiosked -or [int]$Record.dispatchOrderStatusTypeId -eq 4
   $context.context.stops = $orderedStops
@@ -256,10 +256,9 @@ function Receive-PilotOrders {
   $open = [Collections.Generic.List[object]]::new()
   $staged = 0; $skipped = 0
   foreach ($record in $records) {
-    $id = Get-PilotMappingValue (Get-PilotMappingRow $mapping 'Order.pilotOrderId') @{ record = $record; cfg = $Cfg }
-    if ((Get-PilotOrderCache $cacheDir $id).state -eq 'staged') { $staged++; continue }
+    if ((Get-PilotOrderCache $cacheDir $record.dispatchOrderId).state -eq 'staged') { $staged++; continue }
     $reason = Get-PilotOrderSkipReason $record $include $window $mapping $Cfg
-    if ($reason) { Skip-PilotOrder $cacheDir $id $reason; $skipped++; continue }
+    if ($reason) { Skip-PilotOrder $cacheDir $record.dispatchOrderId $reason; $skipped++; continue }
     $open.Add($record)
   }
   Write-Log "Pilot  : $($records.Count) orders read, $staged already staged, $skipped skipped, $($open.Count) to stage"
@@ -270,8 +269,7 @@ function Receive-PilotOrders {
     try {
       ConvertFrom-PilotOrder $record -Cfg $Cfg -References $references -Mapping $mapping
     } catch {
-      $id = Get-PilotMappingValue (Get-PilotMappingRow $mapping 'Order.pilotOrderId') @{ record = $record; cfg = $Cfg }
-      Skip-PilotOrder $cacheDir $id $_.Exception.Message
+      Skip-PilotOrder $cacheDir $record.dispatchOrderId $_.Exception.Message
     }
   }
 }

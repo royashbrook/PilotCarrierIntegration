@@ -28,6 +28,11 @@ function Read-PilotOrderMapping($Cfg) {
       }
     }
   }
+  foreach ($field in 'Order.pilotOrderId', 'Freight.pilotOrderItemId') {
+    $expected = Get-PilotMappingRow $default $field
+    $actual = Get-PilotMappingRow $map $field
+    if ($actual.Count -ne $expected.Count -or @($expected.Keys | Where-Object { -not $actual.ContainsKey($_) -or $actual[$_] -cne $expected[$_] }).Count) { throw "Operational identity $field cannot be remapped." }
+  }
   foreach ($rule in @($map.Validation.orderId, $map.Validation.quantity) + @($map.Validation.requiredItem)) {
     $row = Get-PilotMappingRow $map $rule.field
     if ($rule.ContainsKey('part') -and ($rule.part -isnot [int] -or $rule.part -lt 0 -or $rule.part -ge @($row.sources).Count)) { throw 'Invalid mapping validation part.' }
@@ -41,7 +46,8 @@ function Read-PilotOrderMapping($Cfg) {
     if ([string]::IsNullOrWhiteSpace([string]$map.Validation.window[$name])) { throw 'Mapping window checks require nonblank rejection messages.' }
   }
   $early = @($map.Validation.orderId, @{ field = $map.Validation.window.start }, @{ field = $map.Validation.window.end })
-  foreach ($rule in $early + @($map.Validation.quantity) + @($map.Validation.requiredItem)) {
+  $joins = @(@{ field = 'Freight.supplierContractId' }, @{ field = 'Pickup.locationCode' }, @{ field = 'Delivery.locationCode' })
+  foreach ($rule in $early + $joins + @($map.Validation.quantity) + @($map.Validation.requiredItem)) {
     $row = Get-PilotMappingRow $map $rule.field
     $sources = if ($rule.ContainsKey('part')) { @($row.sources[$rule.part]) } else { @($row.source) + @($row.sources) }
     foreach ($source in $sources) {

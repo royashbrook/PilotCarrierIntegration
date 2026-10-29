@@ -123,8 +123,10 @@ positive-decimal parsing; scheduled windows use invariant date parsing and end-a
 Validation order and messages preserve the prior identity/status/window/quantity/item precedence.
 One bad active item still holds the whole order. Regex evaluation has a one-second timeout.
 Pre-lookup checks can use only their available record/item/create data, not later reference or
-derived values. Order-level checks cannot depend on an item. Validation and mapping share that
-input context, and the mapped order identity also keys the staged cache.
+derived values. The reference join keys have the same restriction. Order-level checks cannot
+depend on an item. Validation, reference joins and aggregation share the available input context.
+Vendor order/item identity rows are shown in the table but cannot be overridden: replay, cache
+keys and outbound routing are operational contracts, not configurable payload formatting.
 
 The loader uses `Import-PowerShellDataFile`, not script execution. Malformed configuration,
 unsupported targets/casts/checks and blank rejection messages refuse before the Pilot read.
