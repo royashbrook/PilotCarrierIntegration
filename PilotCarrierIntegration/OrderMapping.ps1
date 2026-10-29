@@ -75,16 +75,22 @@ function ConvertTo-PilotJsonToken($Value) {
   return ,([Newtonsoft.Json.Linq.JValue]::new($Value))
 }
 
-function Get-PilotMappingSource($Context, [string]$Path) {
+function Get-PilotMappingSource($Context, [string]$Path, [string]$Phase = 'input', [string]$Group = 'Item') {
   if ($Path.StartsWith('$.')) {
-    if (-not $Context.ContainsKey('_json')) {
+    $role = if ($Group -eq 'Order') { 'order' } else { 'item' }
+    $phaseKey = "$role/$(if ($Phase -eq 'lookup') { 'lookup' } else { 'input' })"
+    if (-not $Context.ContainsKey('_json')) { $Context['_json'] = @{} }
+    if (-not $Context['_json'].ContainsKey($phaseKey)) {
       $inputData = @{
-        order = $Context['record']; item = $Context['item']; create = $Context['cfg'].create
-        terminal = $Context['terminal']; location = $Context['location']; contract = $Context['contract']
+        order = $Context['record']; create = $Context['cfg'].create
       }
-      $Context['_json'] = ConvertTo-PilotJsonToken $inputData
+      if ($role -eq 'item') { $inputData.item = $Context['item'] }
+      if ($Phase -eq 'lookup' -and $role -eq 'item') {
+        $inputData.terminal = $Context['terminal']; $inputData.location = $Context['location']; $inputData.contract = $Context['contract']
+      }
+      $Context['_json'][$phaseKey] = ConvertTo-PilotJsonToken $inputData
     }
-    $token = $Context['_json'].SelectToken($Path)
+    $token = $Context['_json'][$phaseKey].SelectToken($Path)
     if ($null -eq $token -or $token.Type -eq 'Null') { return $null }
     if ($token -isnot [Newtonsoft.Json.Linq.JValue]) { throw "SQL mapping source must select one scalar: $Path" }
     return ,$token.Value
@@ -97,11 +103,11 @@ function Get-PilotMappingSource($Context, [string]$Path) {
 function Get-PilotMappingValue($Row, $Context, [switch]$Raw) {
   if ($Row.ContainsKey('value')) { $value = $Row.value }
   elseif ($Row.sources) {
-    $values = @(foreach ($source in $Row.sources) { ,(Get-PilotMappingSource $Context $source) })
+    $values = @(foreach ($source in $Row.sources) { ,(Get-PilotMappingSource $Context $source $Row.phase $Row.group) })
     $value = $Row.format -f $values
   } else {
     foreach ($source in @($Row.source)) {
-      $value = Get-PilotMappingSource $Context $source
+      $value = Get-PilotMappingSource $Context $source $Row.phase $Row.group
       if ($value) { break }
     }
   }
@@ -116,9 +122,9 @@ function Get-PilotMappingValue($Row, $Context, [switch]$Raw) {
 }
 
 function Get-PilotCheckValue($Mapping, $Rule, $Context) {
-  if ($Rule.source) { return ,(Get-PilotMappingSource $Context $Rule.source) }
+  if ($Rule.source) { return ,(Get-PilotMappingSource $Context $Rule.source $Rule.phase $Rule.group) }
   $row = Get-PilotMappingRow $Mapping $Rule.field
-  if ($Rule.ContainsKey('part')) { return ,(Get-PilotMappingSource $Context $row.sources[$Rule.part]) }
+  if ($Rule.ContainsKey('part')) { return ,(Get-PilotMappingSource $Context $row.sources[$Rule.part] $row.phase $row.group) }
   Get-PilotMappingValue $row $Context -Raw
 }
 

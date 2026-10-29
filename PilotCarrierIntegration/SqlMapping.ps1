@@ -55,7 +55,9 @@ function Read-PilotOrderMapping($Cfg) {
       $seen += $key
       $field = "$group.$($bindings.$group[$key])"
       $target = Get-PilotMappingRow $map $field
+      $target.group = $group
       $phase = if ($row.phase) { $row.phase } else { 'input' }
+      $target.phase = $phase
       if ($phase -cnotin 'input', 'lookup') { throw "Unsupported mapping phase: $phase" }
       if ($row.ContainsKey('cast') -and ($row.cast -isnot [string] -or $row.cast -cnotin 'string', 'nullable_string', 'datetime')) { throw 'Unsupported mapping cast.' }
       $roots = if ($phase -eq 'input') { @('order', 'item', 'create') } else { @('order', 'item', 'create', 'location', 'terminal', 'contract') }
@@ -87,7 +89,7 @@ function Read-PilotOrderMapping($Cfg) {
           default { throw 'Unsupported mapping validator kind.' }
         }
         if (@($definition.Keys | Where-Object { $_ -cnotin $allowed }).Count) { throw 'Unsupported reusable validator property.' }
-        $rule = @{ field = $field; kind = $definition.kind; phase = $phase }
+        $rule = @{ field = $field; kind = $definition.kind; phase = $phase; group = $group }
         foreach ($property in $definition.Keys) { $rule[$property] = $definition[$property] }
         if ($check -isnot [string]) {
           if (@($check.Keys | Where-Object { $_ -cnotin 'use', 'src', 'message' }).Count) { throw 'Unsupported attached validator property.' }

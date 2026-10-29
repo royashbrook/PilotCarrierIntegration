@@ -142,6 +142,55 @@ Describe 'physical SQL bindings with standard JSONPath selectors' {
       }
     }
   }
+  It 'scopes nested root references by phase and role, including attached check overrides' {
+    InModuleScope PilotCarrierIntegration {
+      $path = '$.item.options[?(@.use == $.terminal.terminalId)].value'
+      $ctx = @{ item = @{ options = @(@{ use = 1; value = 'matched' }) }; terminal = @{ terminalId = 1 } }
+      Get-PilotMappingSource $ctx $path 'input' 'Pickup' | Should -BeNullOrEmpty
+      Get-PilotMappingSource $ctx $path 'lookup' 'Pickup' | Should -Be 'matched'
+      $map = Read-PilotOrderMapping
+      Get-PilotCheckValue $map @{ source = $path; phase = 'input'; group = 'Pickup' } $ctx | Should -BeNullOrEmpty
+      $ctx.record = @{ options = @(@{ use = 1; value = 'item-dependent' }) }
+      $ctx.item.id = 1
+      $ctx.Remove('_json')
+      Get-PilotMappingSource $ctx '$.order.options[?(@.use == $.item.id)].value' 'input' 'Order' | Should -BeNullOrEmpty
+      Get-PilotMappingSource $ctx '$.order.options[?(@.use == $.item.id)].value' 'input' 'Pickup' | Should -Be 'item-dependent'
+    }
+  }
+  It 'does not reuse a previous item lookup in a nested-query join or its cached ID list' {
+    $path = '$.item.options[?(@.use == $.terminal.terminalId)].value'
+    $text = $sqlText.Replace("src = '$.item.lineOfOperationsSystemId'", "src = @('$path', '$.item.lineOfOperationsSystemId')")
+    $cfg = New-SqlMappingConfig $text 'phase-roots'
+    $c = @(Get-MappingParityCases "$PSScriptRoot/fixtures" | Where-Object name -eq 'two-terminals')[0]
+    $c.references.terminals.'14673'.name = 'FIRST'
+    $second = $c.references.terminals.'14673' | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $second.terminalId = 14674
+    $second.name = 'SECOND'
+    $c.references.terminals['14674'] = $second
+    $c.record.dispatchOrderItems[0] | Add-Member options @(@{ use = 14674; value = 14674 })
+    $c.record.dispatchOrderItems[1] | Add-Member options @(@{ use = 14673; value = 14673 })
+    InModuleScope PilotCarrierIntegration -Parameters @{ c = $c; cfg = $cfg } {
+      $dir = Join-Path $cfg.directory 'cache'
+      $null = New-Item -ItemType Directory $dir
+      @{ read_at = [datetime]::UtcNow.ToString('o'); rows = @($c.references.terminals.'14673') } | ConvertTo-Json -Depth 20 | Set-Content "$dir/reference-terminal.json"
+      @{ read_at = [datetime]::UtcNow.ToString('o'); rows = @($c.references.locations.Values) } | ConvertTo-Json -Depth 20 | Set-Content "$dir/reference-location.json"
+      @{ read_at = [datetime]::UtcNow.ToString('o'); rows = @($c.references.contracts.Values) } | ConvertTo-Json -Depth 20 | Set-Content "$dir/reference-contract.json"
+      Mock Get-PilotTerminal { @($c.references.terminals.Values) }
+      Mock Get-PilotLocation { throw 'fresh location cache should suffice' }
+      Mock Get-PilotContract { throw 'fresh contract cache should suffice' }
+      Mock Write-Log
+      $map = Read-PilotOrderMapping $cfg
+      $refs = Get-PilotReferenceData ([pscustomobject]@{}) @($c.record) $dir 7 $map $cfg
+      Should -Invoke Get-PilotTerminal -Times 1 -Exactly
+      foreach ($reverse in $false, $true) {
+        $raw = $c.record | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        if ($reverse) { $raw.dispatchOrderItems = @($raw.dispatchOrderItems[1], $raw.dispatchOrderItems[0]) }
+        $order = ConvertFrom-PilotOrder $raw $cfg $refs -Mapping $map
+        @($order.stops | Where-Object type -eq PU | Sort-Object locationCode | ForEach-Object { "$($_.locationCode)=$($_.name)" }) | Should -Be @('14673=FIRST', '14674=SECOND')
+        $order.references.terminals.Count | Should -Be 2
+      }
+    }
+  }
   It 'returns null for an absent scalar and refuses object and multiple selections' {
     InModuleScope PilotCarrierIntegration {
       $ctx = @{ item = [pscustomobject]@{ values = @(1, 2) } }

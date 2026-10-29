@@ -104,6 +104,9 @@ not jq expressions or PowerShell code. `$` is the input envelope:
 `{ order, item, create, terminal, location, contract }`. `order` is one `/order` result;
 `item` is the current active `dispatchOrderItems` element. `create` contains only `settings.create`.
 The remaining objects are the matched reference rows, available in `phase = 'lookup'`.
+Input-phase selectors receive no reference roots, including inside nested JSONPath filters.
+Their values cannot depend on an earlier item's lookup data.
+Order rows receive only `order` and `create`, never a current item.
 Credentials and connection settings are not in this envelope. Each selector must return one
 scalar or null. Property access, array indexes and quoted property names use Json.NET's syntax.
 
