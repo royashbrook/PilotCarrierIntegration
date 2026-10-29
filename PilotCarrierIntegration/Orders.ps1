@@ -151,11 +151,12 @@ function ConvertFrom-PilotOrder {
     $terminalAddress = Complete-PilotAddress $terminalAddress
     $locationAddress = Complete-PilotAddress $locationAddress
 
-    # dispatch maps commodities from the WRA long name and description together: productName repeats
-    # across tanks, and one long name ("Diesel") covers two WRA products (DSL, DSL-AS)
-    $wraName = @($item.wraProductLongName, $item.wraProductDescription | Where-Object { $_ }) -join ' / '
-    $commodityName = if ($wraName) {
-      $wraName
+    # dispatch maps commodities from the product code and the WRA description together: the code is
+    # what to lift (it carries the octane), the WRA product says which tank it goes in. the WRA long
+    # name is not enough, "Diesel" covers DSL and DSL-AS, which go in different tanks
+    $productKey = @($item.productCode, $item.wraProductDescription | Where-Object { $_ }) -join ' / '
+    $commodityName = if ($productKey) {
+      $productKey
     } else {
       'NO PRODUCT'
     }
