@@ -5,6 +5,7 @@
 $script:DataAgent = Import-Module DataAgent -RequiredVersion 0.7.4 -PassThru
 
 . (Join-Path $PSScriptRoot 'Bols.ps1')
+. (Join-Path $PSScriptRoot 'OrderMapping.ps1')
 . (Join-Path $PSScriptRoot 'Orders.ps1')
 . (Join-Path $PSScriptRoot 'Documents.ps1')
 
@@ -77,6 +78,7 @@ function New-PilotCarrierOrderConfig {
   [CmdletBinding()]
   param([Parameter(Mandatory, Position = 0)][string]$Settings)
   $s = Read-PilotCarrierSettings $Settings
+  $null = Read-PilotOrderMapping $s
   $config = @{
     directory = $s.directory
     src = @{ adapter = Get-AdapterPath 'order-read'; args = @{ Settings = $s } }

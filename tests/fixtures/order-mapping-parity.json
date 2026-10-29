@@ -1,0 +1,104 @@
+{
+  "baseline": "d11bbc03a5ae9bebd274a60faf73a814452c8a18",
+  "cases": [
+    {
+      "name": "single",
+      "order": "7FD9B0CC6BF401C3CE9C551388A323C0D48030F4427B8CEB39BA914B3156943C",
+      "archive": "546B24A1AB794F4C65F9E63A2359137ADFC8BD383D6BD1D06063186E86D99E48",
+      "sql": "57E951B217533A7C5CB7C4E0BB570AE1F1DC5D582CB733E9BC28E50AE4E5E85A",
+      "parameters": "66220D65992EBE69AD40C5231B13D7994E6717B55325CC7F4D4A1EDABD7257A5"
+    },
+    {
+      "name": "two-products",
+      "order": "A8C7E2EE53AAD4E32F8CB3378A168D6159666AF80F05C85F0CD5E1312C52801B",
+      "archive": "3FDCE6A17B8DB661FDC5246C5D77E00AA33EF84C01AF7E4B3F84A02C6B888362",
+      "sql": "8CD12F85BD7C05C2FF8CC281960E60B5F895DB4464356C21D6B2ACC6742E64AB",
+      "parameters": "6B422FDA2C0B33BAF1B1A8FD3EF7B35CC8E82427AC31D6A01085251BB7795AFF"
+    },
+    {
+      "name": "two-terminals",
+      "order": "AB7855CD8C7505E9DA413B0890C0A78EB4355A7883B1695171851407BD8199CA",
+      "archive": "56EC1C5DAB69CDA063D336EF85000251CAC1C767FF679FF78DD6230782A3BDDC",
+      "sql": "745F68516FDD8DBB468CDA19A4DB7048AF1D22580EE1BD3651534F66E2F1DD28",
+      "parameters": "5941513BB140FBF25DE214B4E0EB3AE6563C5FCC2D8A25F068DF517FCE291CBC"
+    },
+    {
+      "name": "optional-blank",
+      "order": "DE76677571D077CF857D8E6007BF179EF10FA346745161E1758E74749C5EBC78",
+      "archive": "5A65CE62C0399ABDBB21624CEAF4A1B00248654D4B8AC69C45B505F65B310AC1",
+      "sql": "F0012658F92EE766F39736160AEFA830E190DFB17A9971C9A1617867D4F33001",
+      "parameters": "DE2490C097A728055A1D27F18DE5BFA9BA6F6497C48F67B52997E4716FE4F100"
+    },
+    {
+      "name": "missing-references",
+      "order": "A499E550BBB3A9A19E53D09239AB0B87686881620343BBFDB34B5BD3F5F4108D",
+      "archive": "8C979D65A0FE458792659D53548D487A6299083C7E278C815E2AB43D6F09CE90",
+      "sql": "6797D83394045D5A6391E2B8336BB59595437DB59B47C0B7885990231E4D4655",
+      "parameters": "560C6AB96572794252991B26FFFB2E4A5FAAAC9271F94E04CAD674833FFFBBFB"
+    },
+    {
+      "name": "partial-address",
+      "order": "3960C1CD2697C7AC983C7E0290DAD50CC123A9AA24330D5CA22E77608714C601",
+      "archive": "4E1AC3177498F515E779119F855F61F71494911CFD5A776539A9FB1C2FE77D83",
+      "sql": "57E951B217533A7C5CB7C4E0BB570AE1F1DC5D582CB733E9BC28E50AE4E5E85A",
+      "parameters": "6C417FB5FE782CBC0CAF604BC6666EA4E9DE24D1915C2BBDB89C78E896263549"
+    },
+    {
+      "name": "decimal-string",
+      "order": "1A7D754A84890CC40B64FCC78978699971E3EC8BE97FF4432EBF39B5B58197AB",
+      "archive": "688B80DB5DCE256FDF8BC20125E7A162798ECBCDB69649B41A86A93FA3526BCB",
+      "sql": "57E951B217533A7C5CB7C4E0BB570AE1F1DC5D582CB733E9BC28E50AE4E5E85A",
+      "parameters": "FC8B221A487C93D4D2978D2C08B2617A132D5500D6F8203ED5C2E4B9FDADBE24"
+    }
+  ],
+  "rejections": [
+    {
+      "name": "identity-first",
+      "reason": "no dispatchOrderId"
+    },
+    {
+      "name": "status-before-window",
+      "reason": "status 4"
+    },
+    {
+      "name": "missing-window",
+      "reason": "no scheduled window"
+    },
+    {
+      "name": "invalid-window",
+      "reason": "invalid scheduled window"
+    },
+    {
+      "name": "reversed-window",
+      "reason": "scheduled window ends before it starts"
+    },
+    {
+      "name": "empty-items",
+      "reason": "no active items"
+    },
+    {
+      "name": "bad-quantities",
+      "reason": "no gallons on item 11888001, 11888002"
+    },
+    {
+      "name": "quantity-before-required",
+      "reason": "no gallons on item 11888002"
+    },
+    {
+      "name": "item-identity-first",
+      "reason": "no dispatchOrderItemId on item "
+    },
+    {
+      "name": "location-before-product",
+      "reason": "no locationSystemId on item 11888001"
+    },
+    {
+      "name": "product-before-wra",
+      "reason": "no productCode on item 11888001"
+    },
+    {
+      "name": "missing-wra",
+      "reason": "no wraProductDescription on item 11888001"
+    }
+  ]
+}
