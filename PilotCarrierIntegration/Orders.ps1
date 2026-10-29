@@ -69,7 +69,7 @@ function ConvertFrom-PilotOrder {
   )
 
   if (-not $Mapping) { $Mapping = Read-PilotOrderMapping $Cfg }
-  $reason = Get-PilotOrderSkipReason $Record -Mapping $Mapping
+  $reason = Get-PilotOrderSkipReason $Record -Mapping $Mapping -Cfg $Cfg
   if ($reason) { throw "Pilot order $($Record.dispatchOrderId): $reason." }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
   $context = @{ record = $Record; cfg = $Cfg }
@@ -134,8 +134,8 @@ function ConvertFrom-PilotOrder {
 
 # Required fields are checked before reference reads; the same checks backstop direct translation.
 function Get-PilotOrderSkipReason {
-  param([Parameter(Mandatory)]$Record, [int[]]$Include = @(2), $Window, $Mapping = (Read-PilotOrderMapping))
-  $context = @{ record = $Record }
+  param([Parameter(Mandatory)]$Record, [int[]]$Include = @(2), $Window, $Mapping = (Read-PilotOrderMapping), $Cfg)
+  $context = @{ record = $Record; cfg = $Cfg }
   $rules = $Mapping.Validation
   if (-not (Test-PilotMappingValue (Get-PilotCheckValue $Mapping $rules.orderId $context) $rules.orderId)) { return $rules.orderId.message }
   $status = 0
@@ -157,11 +157,11 @@ function Get-PilotOrderSkipReason {
   }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
   if (-not $items.Count) { return 'no active items' }
-  $empty = @($items | Where-Object { -not (Test-PilotMappingValue (Get-PilotCheckValue $Mapping $rules.quantity @{ item = $_ }) $rules.quantity) })
+  $empty = @($items | Where-Object { -not (Test-PilotMappingValue (Get-PilotCheckValue $Mapping $rules.quantity @{ record = $Record; cfg = $Cfg; item = $_ }) $rules.quantity) })
   if ($empty.Count) { return $rules.quantity.message -f (@($empty.dispatchOrderItemId) -join ', ') }
   foreach ($item in $items) {
     foreach ($rule in $rules.requiredItem) {
-      if (-not (Test-PilotMappingValue (Get-PilotCheckValue $Mapping $rule @{ item = $item }) $rule)) { return $rule.message -f $item.dispatchOrderItemId }
+      if (-not (Test-PilotMappingValue (Get-PilotCheckValue $Mapping $rule @{ record = $Record; cfg = $Cfg; item = $item }) $rule)) { return $rule.message -f $item.dispatchOrderItemId }
     }
   }
 }
@@ -192,7 +192,7 @@ function Select-PilotOrdersToProcess {
   $include = Get-PilotIncludeStatuses $Cfg
   $window = Get-PilotOrderWindow $Cfg
   $mapping = Read-PilotOrderMapping $Cfg
-  @($Records) | Where-Object { -not (Get-PilotOrderSkipReason $_ $include $window $mapping) }
+  @($Records) | Where-Object { -not (Get-PilotOrderSkipReason $_ $include $window $mapping $Cfg) }
 }
 
 # the order cache: one file per Pilot order in the job's cache folder (settings "cache", default "cache"),
@@ -256,9 +256,10 @@ function Receive-PilotOrders {
   $open = [Collections.Generic.List[object]]::new()
   $staged = 0; $skipped = 0
   foreach ($record in $records) {
-    if ((Get-PilotOrderCache $cacheDir $record.dispatchOrderId).state -eq 'staged') { $staged++; continue }
-    $reason = Get-PilotOrderSkipReason $record $include $window $mapping
-    if ($reason) { Skip-PilotOrder $cacheDir $record.dispatchOrderId $reason; $skipped++; continue }
+    $id = Get-PilotMappingValue (Get-PilotMappingRow $mapping 'Order.pilotOrderId') @{ record = $record; cfg = $Cfg }
+    if ((Get-PilotOrderCache $cacheDir $id).state -eq 'staged') { $staged++; continue }
+    $reason = Get-PilotOrderSkipReason $record $include $window $mapping $Cfg
+    if ($reason) { Skip-PilotOrder $cacheDir $id $reason; $skipped++; continue }
     $open.Add($record)
   }
   Write-Log "Pilot  : $($records.Count) orders read, $staged already staged, $skipped skipped, $($open.Count) to stage"
@@ -269,7 +270,8 @@ function Receive-PilotOrders {
     try {
       ConvertFrom-PilotOrder $record -Cfg $Cfg -References $references -Mapping $mapping
     } catch {
-      Skip-PilotOrder $cacheDir $record.dispatchOrderId $_.Exception.Message
+      $id = Get-PilotMappingValue (Get-PilotMappingRow $mapping 'Order.pilotOrderId') @{ record = $record; cfg = $Cfg }
+      Skip-PilotOrder $cacheDir $id $_.Exception.Message
     }
   }
 }

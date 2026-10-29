@@ -111,7 +111,7 @@ Example rows from the complete table:
 
 `Order`, `Freight`, `Pickup` and `Delivery` keep their canonical destinations. A row chooses
 `source`, `sources` plus a format, or a literal `value`. A source array uses the first truthy value
-(the existing reference-data fallbacks). `default` supplies the existing fallback; `blank: $true`
+(the existing reference-data fallbacks). `default` supplies the existing fallback; `blank = $true`
 also treats whitespace as absent. Casts are `string`, `nullable_string` and `datetime`; omitted
 casts preserve the source type. Input roots are `record`, `item`, `terminal`, `location`, `contract`,
 `context`, and `cfg.create` only. Credential and connection settings are not mapping inputs.
@@ -122,6 +122,9 @@ Scalar checks use regex, for example `pattern = '\S'` for a nonblank value. Gall
 positive-decimal parsing; scheduled windows use invariant date parsing and end-after-start.
 Validation order and messages preserve the prior identity/status/window/quantity/item precedence.
 One bad active item still holds the whole order. Regex evaluation has a one-second timeout.
+Pre-lookup checks can use only their available record/item/create data, not later reference or
+derived values. Order-level checks cannot depend on an item. Validation and mapping share that
+input context, and the mapped order identity also keys the staged cache.
 
 The loader uses `Import-PowerShellDataFile`, not script execution. Malformed configuration,
 unsupported targets/casts/checks and blank rejection messages refuse before the Pilot read.

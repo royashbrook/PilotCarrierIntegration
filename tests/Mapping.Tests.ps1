@@ -72,12 +72,68 @@ Describe 'caller-owned mapping configuration' {
       (ConvertFrom-PilotOrder $c.record $c.cfg $c.references -Mapping $map).stops[0].freight[0].quantity | Should -Be 100
     }
   }
+  It 'shares record and create context between item validation and translation' {
+    InModuleScope PilotCarrierIntegration -Parameters @{ c = $case } {
+      $map = Read-PilotOrderMapping
+      (Get-PilotMappingRow $map 'Freight.productCode').source = 'record.sourceSystemOrderId'
+      (Get-PilotMappingRow $map 'Freight.quantity').source = 'cfg.create.testGallons'
+      $cfg = $c.cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $cfg.create | Add-Member testGallons 100
+      Get-PilotOrderSkipReason $c.record -Mapping $map -Cfg $cfg | Should -BeNullOrEmpty
+      $order = ConvertFrom-PilotOrder $c.record $cfg $c.references -Mapping $map
+      $order.stops[0].freight[0].productCode | Should -Be $c.record.sourceSystemOrderId
+      $order.stops[0].freight[0].quantity | Should -Be 100
+    }
+  }
+  It 'uses the mapped identity for staged cache lookup as well as SQL staging' {
+    $dir = Join-Path $TestDrive 'identity'
+    New-Item -ItemType Directory $dir | Out-Null
+    $text = $defaultText.Replace("destination = 'pilotOrderId'; source = 'record.dispatchOrderId'", "destination = 'pilotOrderId'; source = 'record.sourceSystemOrderId'")
+    $text | Should -Not -Be $defaultText
+    Set-Content "$dir/custom.psd1" -Value $text
+    $cfg = $case.cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $cfg | Add-Member directory $dir
+    $cfg | Add-Member order_mapping 'custom.psd1'
+    InModuleScope PilotCarrierIntegration -Parameters @{ c = $case; cfg = $cfg; dir = $dir } {
+      Mock Get-PilotOrder { @($c.record) }
+      Mock Get-PilotReferenceData { $c.references }
+      Mock Write-Log
+      Mock Write-TmwOrders { @([pscustomobject]@{ ok = $true; action = 'CREATED'; pilot_order_id = $c.record.sourceSystemOrderId; order_number = 'synthetic-tmw'; edistate = 10 }) }
+      $orders = @(Receive-PilotOrders $cfg ([pscustomobject]@{}))
+      $orders[0].pilotOrderId | Should -Be $c.record.sourceSystemOrderId
+      $path = Join-Path $dir 'out/orders.xml'
+      Save-PilotOrderPlan $orders @{ Path = $path }
+      Send-PilotOrderPlan $path @{ Settings = ($cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable) }
+      (Get-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $c.record.sourceSystemOrderId).state | Should -Be 'staged'
+      @(Receive-PilotOrders $cfg ([pscustomobject]@{})).Count | Should -Be 0
+      Should -Invoke Get-PilotReferenceData -Times 1 -Exactly
+    }
+  }
+  It 'also keys a post-lookup translation failure by the mapped identity' {
+    $dir = Join-Path $TestDrive 'translation-failure'
+    New-Item -ItemType Directory $dir | Out-Null
+    Set-Content "$dir/custom.psd1" -Value $defaultText.Replace("destination = 'pilotOrderId'; source = 'record.dispatchOrderId'", "destination = 'pilotOrderId'; source = 'record.sourceSystemOrderId'")
+    $cfg = $case.cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $cfg | Add-Member directory $dir
+    $cfg | Add-Member order_mapping 'custom.psd1'
+    InModuleScope PilotCarrierIntegration -Parameters @{ c = $case; cfg = $cfg } {
+      Mock Get-PilotOrder { @($c.record) }
+      Mock Get-PilotReferenceData { $c.references }
+      Mock ConvertFrom-PilotOrder { throw 'synthetic translation refusal' }
+      Mock Write-Log
+      @(Receive-PilotOrders $cfg ([pscustomobject]@{})).Count | Should -Be 0
+      (Get-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $c.record.sourceSystemOrderId).reason | Should -Be 'synthetic translation refusal'
+      Get-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $c.record.dispatchOrderId | Should -BeNullOrEmpty
+    }
+  }
   It 'refuses <name> before any Pilot read' -ForEach @(
     @{ name = 'bad regex'; old = "pattern = '\S'"; replacement = "pattern = '['" },
     @{ name = 'bad cast'; old = "cast = 'string'"; replacement = "cast = 'eval'" },
     @{ name = 'expression source'; old = "source = 'item.productCode'"; replacement = "source = 'item.productCode()'" },
     @{ name = 'credential source'; old = "source = 'item.productCode'"; replacement = "source = 'cfg.pilot.client_secret'" },
     @{ name = 'connection source'; old = "source = 'item.productCode'"; replacement = "source = 'cfg.tmw.connection_string'" },
+    @{ name = 'late validation source'; old = "destination = 'productCode'; source = 'item.productCode'"; replacement = "destination = 'productCode'; source = 'terminal.name'" },
+    @{ name = 'item-dependent order identity'; old = "destination = 'pilotOrderId'; source = 'record.dispatchOrderId'"; replacement = "destination = 'pilotOrderId'; source = 'item.dispatchOrderItemId'" },
     @{ name = 'empty source'; old = "source = 'item.productCode'"; replacement = "source = ''" },
     @{ name = 'unknown destination'; old = "destination = 'productCode'"; replacement = "destination = 'productTypo'" },
     @{ name = 'unknown check'; old = "kind = 'positive_decimal'"; replacement = "kind = 'eval'" },
@@ -101,11 +157,13 @@ Describe 'caller-owned mapping configuration' {
   It 'imports only data, not commands or script blocks' {
     $dir = Join-Path $TestDrive 'not-code'
     New-Item -ItemType Directory $dir | Out-Null
-    Set-Content "$dir/custom.psd1" -Value '@{ Order = (Get-Process) }'
-    InModuleScope PilotCarrierIntegration -Parameters @{ dir = $dir } {
-      Mock Get-Process { throw 'must not execute' }
-      { Read-PilotOrderMapping @{ directory = $dir; order_mapping = 'custom.psd1' } } | Should -Throw
-      Should -Invoke Get-Process -Times 0 -Exactly
+    foreach ($text in '@{ Order = (Get-Process) }', '@{ Order = { Get-Process } }') {
+      Set-Content "$dir/custom.psd1" -Value $text
+      InModuleScope PilotCarrierIntegration -Parameters @{ dir = $dir } {
+        Mock Get-Process { throw 'must not execute' }
+        { Read-PilotOrderMapping @{ directory = $dir; order_mapping = 'custom.psd1' } } | Should -Throw
+        Should -Invoke Get-Process -Times 0 -Exactly
+      }
     }
   }
 }

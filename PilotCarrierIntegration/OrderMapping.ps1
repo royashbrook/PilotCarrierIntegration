@@ -40,6 +40,15 @@ function Read-PilotOrderMapping($Cfg) {
   foreach ($name in 'missing', 'invalid', 'reversed') {
     if ([string]::IsNullOrWhiteSpace([string]$map.Validation.window[$name])) { throw 'Mapping window checks require nonblank rejection messages.' }
   }
+  $early = @($map.Validation.orderId, @{ field = $map.Validation.window.start }, @{ field = $map.Validation.window.end })
+  foreach ($rule in $early + @($map.Validation.quantity) + @($map.Validation.requiredItem)) {
+    $row = Get-PilotMappingRow $map $rule.field
+    $sources = if ($rule.ContainsKey('part')) { @($row.sources[$rule.part]) } else { @($row.source) + @($row.sources) }
+    foreach ($source in $sources) {
+      if (-not $source) { continue }
+      if ($source -notmatch '^(record(\.\w+)*|item(\.\w+)*|cfg\.create\.\w+)$' -or ($rule -in $early -and $source -match '^item(\.|$)')) { throw 'Pre-lookup checks require order/item/create data, not enriched or derived sources.' }
+    }
+  }
   $map
 }
 
