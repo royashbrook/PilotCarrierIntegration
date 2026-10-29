@@ -84,6 +84,64 @@ Describe 'physical SQL bindings with standard JSONPath selectors' {
       Get-PilotMappingSource @{ record = [pscustomobject]@{ id = 1 } } '$.order.id' | Should -Be 1
     }
   }
+  It 'unwraps null, empty, false and zero before the existing fallback behavior' {
+    InModuleScope PilotCarrierIntegration {
+      $ctx = @{ item = [pscustomobject]@{ zero = 0; empty = ''; false = $false; nil = $null; fallback = 'next' } }
+      foreach ($name in 'zero', 'empty', 'false', 'nil') {
+        Get-PilotMappingValue @{ source = @("$.item.$name", '$.item.fallback') } $ctx | Should -Be 'next'
+      }
+      Get-PilotMappingSource $ctx '$.item.zero' | Should -Be 0
+      Get-PilotMappingSource $ctx '$.item.false' | Should -BeFalse
+      Get-PilotMappingSource $ctx '$.item.nil' | Should -BeNullOrEmpty
+    }
+  }
+  It 'normalizes once for each immutable context, not once for every field' {
+    InModuleScope PilotCarrierIntegration {
+      $ctx = @{ item = [pscustomobject]@{ a = 1; b = 2 } }
+      Get-PilotMappingSource $ctx '$.item.a' | Should -Be 1
+      $tokens = $ctx['_json']
+      Mock ConvertTo-PilotJsonToken { throw 'repeated normalization' }
+      Get-PilotMappingSource $ctx '$.item.b' | Should -Be 2
+      [object]::ReferenceEquals($tokens, $ctx['_json']) | Should -BeTrue
+      Should -Invoke ConvertTo-PilotJsonToken -Times 0 -Exactly
+    }
+  }
+  It 'preserves native UTC/local/unspecified dates, offsets, ticks and decimals' {
+    InModuleScope PilotCarrierIntegration {
+      foreach ($kind in [DateTimeKind]::Utc, [DateTimeKind]::Local, [DateTimeKind]::Unspecified) {
+        $date = [datetime]::SpecifyKind([datetime]'2026-11-02T06:00:00.1234567', $kind)
+        $value = Get-PilotMappingSource @{ record = @{ date = $date } } '$.order.date'
+        $value | Should -BeOfType datetime
+        $value.Ticks | Should -Be $date.Ticks
+        $value.Kind | Should -Be $kind
+      }
+      $offset = [DateTimeOffset]'2026-11-02T06:00:00.1234567+05:30'
+      $value = Get-PilotMappingSource @{ record = @{ date = $offset } } '$.order.date'
+      $value | Should -BeOfType DateTimeOffset
+      $value.ToString('o') | Should -Be $offset.ToString('o')
+      $amount = [decimal]'1234567890.123456789'
+      $value = Get-PilotMappingSource @{ item = @{ amount = $amount } } '$.item.amount'
+      $value | Should -BeOfType decimal
+      $value | Should -Be $amount
+    }
+  }
+  It 'keeps native UTC scheduled windows identical to the legacy translation' {
+    InModuleScope PilotCarrierIntegration -Parameters @{ c = $sqlCase } {
+      $raw = $c.record | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $raw.scheduledStartDateTime = [datetime]::SpecifyKind([datetime]'2026-11-02T06:00:00.1234567', [DateTimeKind]::Utc)
+      $raw.scheduledEndDateTime = $raw.scheduledStartDateTime.AddHours(2)
+      $before = ConvertFrom-PilotOrder $raw $c.cfg $c.references -Mapping (Read-LegacyPilotOrderMapping)
+      $after = ConvertFrom-PilotOrder $raw $c.cfg $c.references
+      $beforeCommand = New-TmwOrderCommand $before $c.cfg -Now ([datetime]'2026-11-01T12:00:00')
+      $afterCommand = New-TmwOrderCommand $after $c.cfg -Now ([datetime]'2026-11-01T12:00:00')
+      $after.deliveryWindowStart.ToString('o') | Should -Be $before.deliveryWindowStart.ToString('o')
+      $afterCommand.sql | Should -Be $beforeCommand.sql
+      foreach ($parameter in $afterCommand.parameters | Where-Object type -eq DateTime) {
+        $expected = @($beforeCommand.parameters | Where-Object name -eq $parameter.name)[0].value
+        $parameter.value.ToString('o') | Should -Be $expected.ToString('o')
+      }
+    }
+  }
   It 'returns null for an absent scalar and refuses object and multiple selections' {
     InModuleScope PilotCarrierIntegration {
       $ctx = @{ item = [pscustomobject]@{ values = @(1, 2) } }

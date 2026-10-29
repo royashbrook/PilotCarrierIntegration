@@ -58,21 +58,36 @@ function Read-LegacyPilotOrderMapping($Cfg) {
   $map
 }
 
+function ConvertTo-PilotJsonToken($Value) {
+  if ($null -eq $Value) { return ,([Newtonsoft.Json.Linq.JValue]::CreateNull()) }
+  if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
+    $result = [Newtonsoft.Json.Linq.JObject]::new()
+    $names = if ($Value -is [Collections.IDictionary]) { $Value.Keys } else { $Value.PSObject.Properties.Name }
+    foreach ($name in $names) { $result.Add([string]$name, (ConvertTo-PilotJsonToken $Value.$name)) }
+    return ,$result
+  }
+  if ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
+    $result = [Newtonsoft.Json.Linq.JArray]::new()
+    foreach ($item in $Value) { $result.Add((ConvertTo-PilotJsonToken $item)) }
+    return ,$result
+  }
+  # Native dates, offsets and decimals keep their types instead of round-tripping through JSON text.
+  return ,([Newtonsoft.Json.Linq.JValue]::new($Value))
+}
+
 function Get-PilotMappingSource($Context, [string]$Path) {
   if ($Path.StartsWith('$.')) {
-    $inputData = @{
-      order = $Context['record']; item = $Context['item']; create = $Context['cfg'].create
-      terminal = $Context['terminal']; location = $Context['location']; contract = $Context['contract']
+    if (-not $Context.ContainsKey('_json')) {
+      $inputData = @{
+        order = $Context['record']; item = $Context['item']; create = $Context['cfg'].create
+        terminal = $Context['terminal']; location = $Context['location']; contract = $Context['contract']
+      }
+      $Context['_json'] = ConvertTo-PilotJsonToken $inputData
     }
-    $reader = [Newtonsoft.Json.JsonTextReader]::new([IO.StringReader]::new(($inputData | ConvertTo-Json -Depth 50 -Compress -WarningAction Stop)))
-    # ISO-looking identifiers remain strings. Only explicit datetime casts interpret dates.
-    $reader.DateParseHandling = [Newtonsoft.Json.DateParseHandling]::None
-    try {
-      $token = [Newtonsoft.Json.Linq.JObject]::Load($reader).SelectToken($Path)
-      if ($null -eq $token -or $token.Type -eq 'Null') { return $null }
-      if ($token -isnot [Newtonsoft.Json.Linq.JValue]) { throw "SQL mapping source must select one scalar: $Path" }
-      return ,$token.Value
-    } finally { $reader.Close() }
+    $token = $Context['_json'].SelectToken($Path)
+    if ($null -eq $token -or $token.Type -eq 'Null') { return $null }
+    if ($token -isnot [Newtonsoft.Json.Linq.JValue]) { throw "SQL mapping source must select one scalar: $Path" }
+    return ,$token.Value
   }
   $value = $Context
   foreach ($part in $Path.Split('.')) { $value = $value.$part }
