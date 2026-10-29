@@ -423,7 +423,7 @@ Describe 'direct TMW DataExchange staging' {
     $command.sql | Should -Match 'DX archive detail count mismatch'
   }
   It 'is parameterized and does not embed Pilot data in SQL text' {
-    $command.sql | Should -Not -Match '10877997|Bio Diesel|14673|55979'
+    $command.sql | Should -Not -Match '10877997|B99-UL / B99|14673|55979'
     @($command.parameters.value) | Should -Contain '10877997'
     @($command.parameters.value) | Should -Contain 'B99-UL / B99'
   }
