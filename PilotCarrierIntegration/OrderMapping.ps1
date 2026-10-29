@@ -5,8 +5,8 @@ function Get-PilotMappingRow($Mapping, [string]$Field) {
   $rows[0]
 }
 
-function Read-PilotOrderMapping($Cfg) {
-  $default = Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot 'order-mapping.psd1')
+function Read-LegacyPilotOrderMapping($Cfg) {
+  $default = Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot 'order-model.psd1')
   $map = if ($Cfg.order_mapping) { Import-PowerShellDataFile -LiteralPath (Join-Path $Cfg.directory $Cfg.order_mapping) } else { $default }
   foreach ($group in 'Order', 'Freight', 'Pickup', 'Delivery') {
     if (Compare-Object @($default.$group.destination | Sort-Object) @($map.$group.destination | Sort-Object)) { throw "Order mapping $group must retain the canonical destinations." }
@@ -58,7 +58,43 @@ function Read-PilotOrderMapping($Cfg) {
   $map
 }
 
-function Get-PilotMappingSource($Context, [string]$Path) {
+function ConvertTo-PilotJsonToken($Value) {
+  if ($null -eq $Value) { return ,([Newtonsoft.Json.Linq.JValue]::CreateNull()) }
+  if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
+    $result = [Newtonsoft.Json.Linq.JObject]::new()
+    $names = if ($Value -is [Collections.IDictionary]) { $Value.Keys } else { $Value.PSObject.Properties.Name }
+    foreach ($name in $names) { $result.Add([string]$name, (ConvertTo-PilotJsonToken $Value.$name)) }
+    return ,$result
+  }
+  if ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
+    $result = [Newtonsoft.Json.Linq.JArray]::new()
+    foreach ($item in $Value) { $result.Add((ConvertTo-PilotJsonToken $item)) }
+    return ,$result
+  }
+  # Native dates, offsets and decimals keep their types instead of round-tripping through JSON text.
+  return ,([Newtonsoft.Json.Linq.JValue]::new($Value))
+}
+
+function Get-PilotMappingSource($Context, [string]$Path, [string]$Phase = 'input', [string]$Group = 'Item') {
+  if ($Path.StartsWith('$.')) {
+    $role = if ($Group -eq 'Order') { 'order' } else { 'item' }
+    $phaseKey = "$role/$(if ($Phase -eq 'lookup') { 'lookup' } else { 'input' })"
+    if (-not $Context.ContainsKey('_json')) { $Context['_json'] = @{} }
+    if (-not $Context['_json'].ContainsKey($phaseKey)) {
+      $inputData = @{
+        order = $Context['record']; create = $Context['cfg'].create
+      }
+      if ($role -eq 'item') { $inputData.item = $Context['item'] }
+      if ($Phase -eq 'lookup' -and $role -eq 'item') {
+        $inputData.terminal = $Context['terminal']; $inputData.location = $Context['location']; $inputData.contract = $Context['contract']
+      }
+      $Context['_json'][$phaseKey] = ConvertTo-PilotJsonToken $inputData
+    }
+    $token = $Context['_json'][$phaseKey].SelectToken($Path)
+    if ($null -eq $token -or $token.Type -eq 'Null') { return $null }
+    if ($token -isnot [Newtonsoft.Json.Linq.JValue]) { throw "SQL mapping source must select one scalar: $Path" }
+    return ,$token.Value
+  }
   $value = $Context
   foreach ($part in $Path.Split('.')) { $value = $value.$part }
   return ,$value
@@ -67,11 +103,11 @@ function Get-PilotMappingSource($Context, [string]$Path) {
 function Get-PilotMappingValue($Row, $Context, [switch]$Raw) {
   if ($Row.ContainsKey('value')) { $value = $Row.value }
   elseif ($Row.sources) {
-    $values = @(foreach ($source in $Row.sources) { ,(Get-PilotMappingSource $Context $source) })
+    $values = @(foreach ($source in $Row.sources) { ,(Get-PilotMappingSource $Context $source $Row.phase $Row.group) })
     $value = $Row.format -f $values
   } else {
     foreach ($source in @($Row.source)) {
-      $value = Get-PilotMappingSource $Context $source
+      $value = Get-PilotMappingSource $Context $source $Row.phase $Row.group
       if ($value) { break }
     }
   }
@@ -86,8 +122,9 @@ function Get-PilotMappingValue($Row, $Context, [switch]$Raw) {
 }
 
 function Get-PilotCheckValue($Mapping, $Rule, $Context) {
+  if ($Rule.source) { return ,(Get-PilotMappingSource $Context $Rule.source $Rule.phase $Rule.group) }
   $row = Get-PilotMappingRow $Mapping $Rule.field
-  if ($Rule.ContainsKey('part')) { return ,(Get-PilotMappingSource $Context $row.sources[$Rule.part]) }
+  if ($Rule.ContainsKey('part')) { return ,(Get-PilotMappingSource $Context $row.sources[$Rule.part] $row.phase $row.group) }
   Get-PilotMappingValue $row $Context -Raw
 }
 

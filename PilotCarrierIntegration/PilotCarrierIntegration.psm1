@@ -6,6 +6,7 @@ $script:DataAgent = Import-Module DataAgent -RequiredVersion 0.7.4 -PassThru
 
 . (Join-Path $PSScriptRoot 'Bols.ps1')
 . (Join-Path $PSScriptRoot 'OrderMapping.ps1')
+. (Join-Path $PSScriptRoot 'SqlMapping.ps1')
 . (Join-Path $PSScriptRoot 'Orders.ps1')
 . (Join-Path $PSScriptRoot 'Documents.ps1')
 

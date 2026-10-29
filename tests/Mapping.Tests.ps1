@@ -5,7 +5,7 @@ BeforeAll {
 
 Describe 'caller-owned mapping configuration' {
   BeforeAll {
-    $script:defaultText = Get-Content "$PSScriptRoot/../PilotCarrierIntegration/order-mapping.psd1" -Raw
+    $script:defaultText = Get-Content "$PSScriptRoot/../PilotCarrierIntegration/order-model.psd1" -Raw
     $script:case = @(Get-MappingParityCases "$PSScriptRoot/fixtures")[0]
   }
   It 'resolves the override relative to settings and passes it through the real factory' {
