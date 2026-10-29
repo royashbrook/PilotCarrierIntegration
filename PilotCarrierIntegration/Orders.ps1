@@ -20,7 +20,7 @@ function Get-PilotReferenceData {
   param($Session, [AllowEmptyCollection()]$Records = @(), [string]$CacheDir, [int]$KeepDays = 7)
   $lists = @(
     @{ name = 'location'; key = 'locationSystemId'; read = { Get-PilotLocation -Session $Session }
-      ids = { foreach ($i in $_.dispatchOrderItems) { if ($null -ne $i.locationSystemId) { $i.locationSystemId } else { $i.customerLocationSystemId } } } }
+      ids = { $_.dispatchOrderItems.locationSystemId } }
     @{ name = 'terminal'; key = 'terminalId'; read = { Get-PilotTerminal -Session $Session }
       ids = { $_.dispatchOrderItems.lineOfOperationsSystemId } }
     @{ name = 'contract'; key = 'contractSystemId'; read = { Get-PilotContract -Session $Session }
@@ -67,55 +67,29 @@ function ConvertFrom-PilotOrder {
     [Parameter(Mandatory)]$References
   )
 
-  if (-not $Record.dispatchOrderId) {
-    throw 'Pilot order record has no dispatchOrderId.'
-  }
-
+  $reason = Get-PilotOrderSkipReason $Record
+  if ($reason) { throw "Pilot order $($Record.dispatchOrderId): $reason." }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
-  if (-not $items.Count) {
-    throw "Pilot order $($Record.dispatchOrderId) has no active dispatchOrderItems."
-  }
-  if (-not $Record.scheduledStartDateTime -or -not $Record.scheduledEndDateTime) {
-    throw "Pilot order $($Record.dispatchOrderId) has no complete scheduled window."
-  }
   $deliveryWindowStart = [datetime]$Record.scheduledStartDateTime
   $deliveryWindowEnd = [datetime]$Record.scheduledEndDateTime
-  if ($deliveryWindowEnd -le $deliveryWindowStart) {
-    throw "Pilot order $($Record.dispatchOrderId) scheduled window must end after it starts."
-  }
 
   $stopsByKey = [ordered]@{}
   # the reference rows this order used, kept with it when it is staged
   $used = [ordered]@{ terminals = @{}; locations = @{}; contracts = @{} }
   foreach ($item in $items) {
-    $terminalId = $item.lineOfOperationsSystemId
-    $locationId = if ($null -ne $item.locationSystemId) {
-      $item.locationSystemId
-    } else {
-      $item.customerLocationSystemId
-    }
-    if ($null -eq $locationId) {
-      throw "Pilot order $($Record.dispatchOrderId) item $($item.dispatchOrderItemId) has no delivery-location identifier."
-    }
-    if ($null -eq $item.dispatchOrderItemId) {
-      throw "Pilot order $($Record.dispatchOrderId) has an item with no dispatchOrderItemId."
-    }
-    if ($null -eq $item.gallons -or [decimal]$item.gallons -le 0) {
-      throw "Pilot order $($Record.dispatchOrderId) item $($item.dispatchOrderItemId) has no positive gallon quantity."
-    }
-    if ($null -eq $item.productSystemId -and $null -eq $item.wraProductSystemId) {
-      throw "Pilot order $($Record.dispatchOrderId) item $($item.dispatchOrderItemId) has no product identifier."
-    }
+    $terminalId = if (-not [string]::IsNullOrWhiteSpace([string]$item.lineOfOperationsSystemId)) { $item.lineOfOperationsSystemId }
+    $contractId = if (-not [string]::IsNullOrWhiteSpace([string]$item.looSystemId)) { $item.looSystemId }
+    $locationId = $item.locationSystemId
 
     # Pilot's reference data only fills in names and addresses; TMW maps each stop by its id.
     # A missing id stages as UNKNOWN, an id their reference data lacks keeps the id, and either
     # way the stop comes over with no address for ops to finish in EDI.
     $terminal = if ($null -ne $terminalId) { $References.terminals[[string]$terminalId] }
     $location = $References.locations[[string]$locationId]
-    $contract = if ($null -ne $item.looSystemId) { $References.contracts[[string]$item.looSystemId] }
+    $contract = if ($null -ne $contractId) { $References.contracts[[string]$contractId] }
     if ($terminal) { $used.terminals[[string]$terminalId] = $terminal }
     if ($location) { $used.locations[[string]$locationId] = $location }
-    if ($contract) { $used.contracts[[string]$item.looSystemId] = $contract }
+    if ($contract) { $used.contracts[[string]$contractId] = $contract }
     $supplierName = if ($contract.contractName) {
       [string]$contract.contractName
     } else {
@@ -154,19 +128,8 @@ function ConvertFrom-PilotOrder {
     # dispatch maps commodities from the product code and the WRA description together: the code is
     # what to lift (it carries the octane), the WRA product says which tank it goes in. the WRA long
     # name is not enough, "Diesel" covers DSL and DSL-AS, which go in different tanks
-    $productKey = @($item.productCode, $item.wraProductDescription | Where-Object { $_ }) -join ' / '
-    $commodityName = if ($productKey) {
-      $productKey
-    } else {
-      'NO PRODUCT'
-    }
-    $productCode = if ($item.productCode) {
-      $item.productCode
-    } elseif ($item.wraProductId) {
-      [string]$item.wraProductId
-    } else {
-      [string]$item.wraProductSystemId
-    }
+    $commodityName = '{0} / {1}' -f $item.productCode, $item.wraProductDescription
+    $productCode = [string]$item.productCode
     $freight = [pscustomobject]@{
       freightNumber = $null
       uom = 'GAL'
@@ -177,14 +140,10 @@ function ConvertFrom-PilotOrder {
       productCode = $productCode
       pilotOrderItemId = [string]$item.dispatchOrderItemId
       pilotSourceItemId = [string]$item.sourceSystemOrderItemId
-      supplierContractId = if ($null -ne $item.looSystemId) { [string]$item.looSystemId } else { 'UNKNOWN' }
+      supplierContractId = if ($null -ne $contractId) { [string]$contractId } else { 'UNKNOWN' }
       supplierName = $supplierName
       supplierDescription = $supplierDescription
-      productSystemId = if ($null -ne $item.productSystemId) {
-        $item.productSystemId
-      } else {
-        $item.wraProductSystemId
-      }
+      productSystemId = $item.productSystemId
     }
 
     foreach ($stopSpec in @(
@@ -225,7 +184,7 @@ function ConvertFrom-PilotOrder {
 
   $contractIds = @(
     $items.looSystemId |
-      Where-Object { $null -ne $_ } |
+      Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
       Sort-Object -Unique
   )
   $orderedStops = @($stopsByKey.Values | Where-Object type -eq 'PU') +
@@ -248,20 +207,25 @@ function ConvertFrom-PilotOrder {
   }
 }
 
-# why a Pilot order is not staged this run, or nothing when it is a good load: a status in
-# poll.include_statuses (Scheduled, 2, by default), a scheduled window that ends after it starts, and at
-# least one active item, every one with gallons. an order that is not good yet stays in Pilot and is read
-# again next run
+# Required fields are checked before reference reads; the same checks backstop direct translation.
 function Get-PilotOrderSkipReason {
   param([Parameter(Mandatory)]$Record, [int[]]$Include = @(2))
-  if (-not $Record.dispatchOrderId) { return 'no dispatchOrderId' }
-  if ([int]$Record.dispatchOrderStatusTypeId -notin $Include) { return "status $($Record.dispatchOrderStatusTypeId) $($Record.dispatchOrderStatusTypeName)".Trim() }
-  if (-not $Record.scheduledStartDateTime -or -not $Record.scheduledEndDateTime) { return 'no scheduled window' }
-  if ([datetime]$Record.scheduledEndDateTime -le [datetime]$Record.scheduledStartDateTime) { return 'scheduled window ends before it starts' }
+  if ([string]::IsNullOrWhiteSpace([string]$Record.dispatchOrderId)) { return 'no dispatchOrderId' }
+  $status = 0
+  if (-not [int]::TryParse([string]$Record.dispatchOrderStatusTypeId, [ref]$status) -or $status -ne 2 -or $status -notin $Include) { return "status $($Record.dispatchOrderStatusTypeId) $($Record.dispatchOrderStatusTypeName)".Trim() }
+  if ([string]::IsNullOrWhiteSpace([string]$Record.scheduledStartDateTime) -or [string]::IsNullOrWhiteSpace([string]$Record.scheduledEndDateTime)) { return 'no scheduled window' }
+  $start = [datetime]::MinValue; $end = [datetime]::MinValue
+  if (-not [datetime]::TryParse([string]$Record.scheduledStartDateTime, [ref]$start) -or -not [datetime]::TryParse([string]$Record.scheduledEndDateTime, [ref]$end)) { return 'invalid scheduled window' }
+  if ($end -le $start) { return 'scheduled window ends before it starts' }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
   if (-not $items.Count) { return 'no active items' }
-  $empty = @($items | Where-Object { $null -eq $_.gallons -or [decimal]$_.gallons -le 0 })
+  $empty = @($items | Where-Object { $gallons = 0d; -not [decimal]::TryParse([string]$_.gallons, [ref]$gallons) -or $gallons -le 0 })
   if ($empty.Count) { return "no gallons on item $(@($empty.dispatchOrderItemId) -join ', ')" }
+  foreach ($item in $items) {
+    foreach ($field in @('dispatchOrderItemId', 'locationSystemId', 'productCode', 'wraProductDescription')) {
+      if ([string]::IsNullOrWhiteSpace([string]$item.$field)) { return "no $field on item $($item.dispatchOrderItemId)" }
+    }
+  }
 }
 
 function Get-PilotKeepDays($Cfg) { if ($Cfg.keep_days) { [int]$Cfg.keep_days } else { 7 } }

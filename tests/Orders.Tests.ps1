@@ -32,9 +32,10 @@ Describe 'Pilot order translation' {
     $canonical.stops[0].freight[0].commodityName | Should -Be 'B99-UL / B99'
     $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $raw.dispatchOrderItems[0].productCode = ''
-    (ConvertFrom-PilotOrder $raw $cfg $references).stops[0].freight[0].commodityName | Should -Be 'B99'
+    { ConvertFrom-PilotOrder $raw $cfg $references } | Should -Throw '*no productCode*'
+    $raw.dispatchOrderItems[0].productCode = 'B99-UL'
     $raw.dispatchOrderItems[0].wraProductDescription = ''
-    (ConvertFrom-PilotOrder $raw $cfg $references).stops[0].freight[0].commodityName | Should -Be 'NO PRODUCT'
+    { ConvertFrom-PilotOrder $raw $cfg $references } | Should -Throw '*no wraProductDescription*'
   }
   It 'keeps one product code apart by the WRA product that says which tank' {
     $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
@@ -133,7 +134,7 @@ Describe 'Pilot order translation' {
   It 'fails closed on data required to stage an order' {
     $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $bad.dispatchOrderItems[0].gallons = 0
-    { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw '*positive gallon quantity*'
+    { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw '*no gallons*'
   }
   It 'stages ids missing from Pilot reference data with the id and no address' {
     $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
@@ -178,8 +179,6 @@ Describe 'Pilot order translation' {
     $blankLocation = $references.locations['55979'] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $blankLocation.description = ''
     $blankOrder = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
-    $blankOrder.dispatchOrderItems[0].productCode = ''
-    $blankOrder.dispatchOrderItems[0].wraProductDescription = ''
     $blank = [pscustomobject]@{
       locations = @{ '55979' = $blankLocation }
       terminals = @{ '14673' = $blankTerminal }
@@ -190,7 +189,7 @@ Describe 'Pilot order translation' {
     $converted.stops[0].freight[0].supplierDescription | Should -Be 'NO SUPPLIER'
     @($converted.stops | Where-Object type -eq 'PU')[0].name | Should -Be 'NO TERMINAL'
     @($converted.stops | Where-Object type -eq 'DR')[0].name | Should -Be 'NO LOCATION'
-    $converted.stops[0].freight[0].commodityName | Should -Be 'NO PRODUCT'
+    $converted.stops[0].freight[0].commodityName | Should -Be 'B99-UL / B99'
   }
   It 'uses scheduled timestamps even when deliveryWindow fields disagree' {
     $canonical.deliveryWindowStart | Should -Be ([datetime]'2026-07-27T23:12:00')
@@ -216,7 +215,7 @@ Describe 'Pilot order translation' {
       $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
       $bad.$field = $null
       Get-PilotOrderSkipReason $bad @(2) | Should -Be 'no scheduled window'
-      { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw '*no complete scheduled window*'
+      { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw '*no scheduled window*'
     }
   }
   It 'refuses equal or reversed scheduled timestamps even with valid deliveryWindow fields' {
@@ -224,7 +223,7 @@ Describe 'Pilot order translation' {
       $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
       $bad.scheduledEndDateTime = ([datetime]$bad.scheduledStartDateTime).AddMinutes($minutes).ToString('s')
       Get-PilotOrderSkipReason $bad @(2) | Should -Be 'scheduled window ends before it starts'
-      { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw '*scheduled window must end after*'
+      { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw '*scheduled window ends before it starts*'
     }
   }
   It 'fails closed when a stop does not fit the TMW display fields' {
@@ -234,12 +233,94 @@ Describe 'Pilot order translation' {
   }
 }
 
+Describe 'required order fields' {
+  It 'holds blank <field> (<kind>) before lookups and conversion' -ForEach @(
+    foreach ($field in 'dispatchOrderId', 'scheduledStartDateTime', 'scheduledEndDateTime', 'dispatchOrderStatusTypeId', 'gallons', 'dispatchOrderItemId', 'locationSystemId', 'productCode', 'wraProductDescription') {
+      foreach ($blank in @(@{ kind = 'null'; value = $null }, @{ kind = 'empty'; value = '' }, @{ kind = 'whitespace'; value = '  ' })) {
+        @{ field = $field; kind = $blank.kind; value = $blank.value; itemField = $field -in @('gallons', 'dispatchOrderItemId', 'locationSystemId', 'productCode', 'wraProductDescription') }
+      }
+    }
+  ) {
+    $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    if ($itemField) { $bad.dispatchOrderItems[0].$field = $value } else { $bad.$field = $value }
+    Mock Get-PilotOrder { @($bad) }
+    Mock Get-PilotReferenceData { throw 'invalid data reached lookups' }
+    Mock Write-Log
+    Get-PilotOrderSkipReason $bad | Should -Not -BeNullOrEmpty
+    @(Receive-PilotOrders $cfg $session 30).Count | Should -Be 0
+    Should -Invoke Get-PilotReferenceData -Times 0 -Exactly
+    { ConvertFrom-PilotOrder $bad $cfg $references } | Should -Throw
+  }
+
+  It 'normalizes blank optional <field> (<kind>) to UNKNOWN' -ForEach @(
+    foreach ($field in 'lineOfOperationsSystemId', 'looSystemId') {
+      foreach ($blank in @(@{ kind = 'null'; value = $null }, @{ kind = 'empty'; value = '' }, @{ kind = 'whitespace'; value = '  ' })) {
+        @{ field = $field; kind = $blank.kind; value = $blank.value }
+      }
+    }
+  ) {
+    $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $raw.dispatchOrderItems[0].$field = $value
+    Get-PilotOrderSkipReason $raw | Should -BeNullOrEmpty
+    $converted = ConvertFrom-PilotOrder $raw $cfg $references
+    if ($field -eq 'looSystemId') {
+      $converted.stops[0].freight[0].supplierContractId | Should -Be 'UNKNOWN'
+      @($converted.contractSystemIds).Count | Should -Be 0
+    } else { $converted.stops[0].locationCode | Should -Be 'UNKNOWN' }
+    { New-TmwOrderCommand $converted $cfg } | Should -Not -Throw
+  }
+
+  It 'holds the whole order for an incomplete second active item and permits a corrected retry' {
+    $bad = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $second = $bad.dispatchOrderItems[0] | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $second.dispatchOrderItemId = 11888002
+    $second.productCode = ' '
+    $bad.dispatchOrderItems = @($bad.dispatchOrderItems[0], $second)
+    $cached = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $cached | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'required-fields')
+    Mock Get-PilotOrder { @($bad) }
+    Mock Get-PilotReferenceData { $references }
+    Mock Write-Log
+    @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
+    @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
+    Should -Invoke Get-PilotReferenceData -Times 0 -Exactly
+    Should -Invoke Write-Log -Times 1 -Exactly -ParameterFilter { $Message -eq 'Skipped: 10877997, no productCode on item 11888002' }
+    $bad.dispatchOrderItems[1].productCode = '87'
+    @(Receive-PilotOrders $cached $session 30).Count | Should -Be 1
+    Should -Invoke Get-PilotReferenceData -Times 1 -Exactly
+  }
+
+  It 'does not require unused product identifiers when the required product fields exist' {
+    $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $raw.dispatchOrderItems[0].productSystemId = $null
+    $raw.dispatchOrderItems[0].wraProductSystemId = $null
+    Get-PilotOrderSkipReason $raw | Should -BeNullOrEmpty
+    (ConvertFrom-PilotOrder $raw $cfg $references).stops[0].freight[0].commodityCode | Should -Be 'B99-UL'
+  }
+
+  It 'never uses the old delivery-location fallback' {
+    $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $raw.dispatchOrderItems[0].locationSystemId = $null
+    $raw.dispatchOrderItems[0] | Add-Member -NotePropertyName customerLocationSystemId -NotePropertyValue 55979 -Force
+    Get-PilotOrderSkipReason $raw | Should -Be 'no locationSystemId on item 11888001'
+    { ConvertFrom-PilotOrder $raw $cfg $references } | Should -Throw '*no locationSystemId*'
+  }
+
+  It 'holds malformed dates and gallons rather than aborting the poll' {
+    foreach ($field in 'scheduledStartDateTime', 'scheduledEndDateTime', 'gallons') {
+      $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      if ($field -eq 'gallons') { $raw.dispatchOrderItems[0].$field = 'not a number' } else { $raw.$field = 'not a date' }
+      Get-PilotOrderSkipReason $raw | Should -Not -BeNullOrEmpty
+    }
+  }
+}
+
 Describe 'poll window and filtering' {
   It 'refuses a one-day window that can drop straddling loads' {
     { Receive-PilotOrders ([pscustomobject]@{}) $session 1 } | Should -Throw
   }
   It 'stages only good loads: Scheduled, a scheduled window, active items all with gallons' {
-    $item = [pscustomobject]@{ dispatchOrderItemId = 7; gallons = 7500; isDeleted = $false }
+    $item = [pscustomobject]@{ dispatchOrderItemId = 7; gallons = 7500; isDeleted = $false; locationSystemId = 55979; productCode = '87'; wraProductDescription = 'UNL' }
     $win = @{ scheduledStartDateTime = '2026-09-28T12:00:00'; scheduledEndDateTime = '2026-09-28T16:00:00' }
     $w = $win + @{ dispatchOrderItems = @($item) }
     $records = @(
@@ -256,7 +337,7 @@ Describe 'poll window and filtering' {
       'status 4 Kiosked', 'status 1', 'no scheduled window', 'scheduled window ends before it starts', 'no active items', 'no gallons on item 8')
     $cfg2 = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $cfg2.poll.include_statuses = @(1, 2)
-    @(Select-PilotOrdersToProcess $records $cfg2).dispatchOrderId | Should -Be @(1, 3)
+    @(Select-PilotOrdersToProcess $records $cfg2).dispatchOrderId | Should -Be @(1)
   }
   It 'reads no reference data when every order is Kiosked' {
       $kiosked = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
