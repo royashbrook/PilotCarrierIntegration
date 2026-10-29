@@ -93,6 +93,45 @@ plans and names what would go, and sends nothing.
 Pilot carrier orders -> translate -> stage each one in TMW DataExchange at EDI state 10, for people
 to accept or reject in TMW.
 
+### Mapping and checks
+
+The data-only [order-mapping.psd1](PilotCarrierIntegration/order-mapping.psd1) names source paths,
+literal values, destinations and validation rules. The bundled table is the default. To own the
+mapping in a caller repo, copy that complete file beside settings.json and add
+`"order_mapping": "order-mapping.psd1"` to settings. The path is relative to the settings folder,
+not the shell's working directory. A branch can change that file without changing the module.
+
+Example rows from the complete table:
+
+```powershell
+@{ destination = 'pilotOrderId'; source = 'record.dispatchOrderId'; cast = 'string' }
+@{ destination = 'uom'; value = 'GAL' }
+@{ destination = 'commodityName'; sources = @('item.productCode', 'item.wraProductDescription'); format = '{0} / {1}' }
+```
+
+`Order`, `Freight`, `Pickup` and `Delivery` keep their canonical destinations. A row chooses
+`source`, `sources` plus a format, or a literal `value`. A source array uses the first truthy value
+(the existing reference-data fallbacks). `default` supplies the existing fallback; `blank: $true`
+also treats whitespace as absent. Casts are `string`, `nullable_string` and `datetime`; omitted
+casts preserve the source type. Input roots are `record`, `item`, `terminal`, `location`, `contract`,
+`context`, and `cfg.create` only. Credential and connection settings are not mapping inputs.
+
+The `Validation` table refers to a mapped field, so a source change follows through its check.
+For a formatted field, `part` selects its zero-based input (part 1 is the WRA description).
+Scalar checks use regex, for example `pattern = '\S'` for a nonblank value. Gallons use invariant
+positive-decimal parsing; scheduled windows use invariant date parsing and end-after-start.
+Validation order and messages preserve the prior identity/status/window/quantity/item precedence.
+One bad active item still holds the whole order. Regex evaluation has a one-second timeout.
+
+The loader uses `Import-PowerShellDataFile`, not script execution. Malformed configuration,
+unsupported targets/casts/checks and blank rejection messages refuse before the Pilot read.
+Mapping does not replace the TMW destination type/width contract. Eligibility, exact polling,
+reference enrichment, address completion, stop grouping, SQL transactions, retries, `EXISTS` and
+cache lifecycle remain code, not configurable expressions or validation failures. The released
+0.7.10 canonical orders, EDI archives, SQL and parameters are pinned by parity fixtures.
+
+### Intake
+
 - Orders are read over a rolling window starting `poll.lookback_days` before today (0 by default) and
   running `poll.window_days` (30 by default, at least 2; Pilot reads at most 30). Pilot's read
   has no status filter, so one filter runs right after it. Only Scheduled (`2`) orders can stage;
