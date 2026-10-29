@@ -5,8 +5,8 @@ function Get-PilotMappingRow($Mapping, [string]$Field) {
   $rows[0]
 }
 
-function Read-PilotOrderMapping($Cfg) {
-  $default = Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot 'order-mapping.psd1')
+function Read-LegacyPilotOrderMapping($Cfg) {
+  $default = Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot 'order-model.psd1')
   $map = if ($Cfg.order_mapping) { Import-PowerShellDataFile -LiteralPath (Join-Path $Cfg.directory $Cfg.order_mapping) } else { $default }
   foreach ($group in 'Order', 'Freight', 'Pickup', 'Delivery') {
     if (Compare-Object @($default.$group.destination | Sort-Object) @($map.$group.destination | Sort-Object)) { throw "Order mapping $group must retain the canonical destinations." }
@@ -59,6 +59,21 @@ function Read-PilotOrderMapping($Cfg) {
 }
 
 function Get-PilotMappingSource($Context, [string]$Path) {
+  if ($Path.StartsWith('$.')) {
+    $inputData = @{
+      order = $Context['record']; item = $Context['item']; create = $Context['cfg'].create
+      terminal = $Context['terminal']; location = $Context['location']; contract = $Context['contract']
+    }
+    $reader = [Newtonsoft.Json.JsonTextReader]::new([IO.StringReader]::new(($inputData | ConvertTo-Json -Depth 50 -Compress -WarningAction Stop)))
+    # ISO-looking identifiers remain strings. Only explicit datetime casts interpret dates.
+    $reader.DateParseHandling = [Newtonsoft.Json.DateParseHandling]::None
+    try {
+      $token = [Newtonsoft.Json.Linq.JObject]::Load($reader).SelectToken($Path)
+      if ($null -eq $token -or $token.Type -eq 'Null') { return $null }
+      if ($token -isnot [Newtonsoft.Json.Linq.JValue]) { throw "SQL mapping source must select one scalar: $Path" }
+      return ,$token.Value
+    } finally { $reader.Close() }
+  }
   $value = $Context
   foreach ($part in $Path.Split('.')) { $value = $value.$part }
   return ,$value
@@ -86,6 +101,7 @@ function Get-PilotMappingValue($Row, $Context, [switch]$Raw) {
 }
 
 function Get-PilotCheckValue($Mapping, $Rule, $Context) {
+  if ($Rule.source) { return ,(Get-PilotMappingSource $Context $Rule.source) }
   $row = Get-PilotMappingRow $Mapping $Rule.field
   if ($Rule.ContainsKey('part')) { return ,(Get-PilotMappingSource $Context $row.sources[$Rule.part]) }
   Get-PilotMappingValue $row $Context -Raw

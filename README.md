@@ -95,47 +95,73 @@ to accept or reject in TMW.
 
 ### Mapping and checks
 
-The data-only [order-mapping.psd1](PilotCarrierIntegration/order-mapping.psd1) names source paths,
-literal values, destinations and validation rules. The bundled table is the default. To own the
-mapping in a caller repo, copy that complete file beside settings.json and add
-`"order_mapping": "order-mapping.psd1"` to settings. The path is relative to the settings folder,
-not the shell's working directory. A branch can change that file without changing the module.
+The data-only [order-mapping.psd1](PilotCarrierIntegration/order-mapping.psd1) uses `src` then
+`dst`. Copy the complete file beside settings.json and set
+`"order_mapping": "order-mapping.psd1"`. Paths are relative to settings, not the shell.
 
-Example rows from the complete table:
+`src` uses [Json.NET JSONPath](https://www.newtonsoft.com/json/help/html/SelectToken.htm),
+not jq expressions or PowerShell code. `$` is the input envelope:
+`{ order, item, create, terminal, location, contract }`. `order` is one `/order` result;
+`item` is the current active `dispatchOrderItems` element. `create` contains only `settings.create`.
+The remaining objects are the matched reference rows, available in `phase = 'lookup'`.
+Credentials and connection settings are not in this envelope. Each selector must return one
+scalar or null. Property access, array indexes and quoted property names use Json.NET's syntax.
+
+`dst` names real `proc.param` inputs or directly updated `table.field` columns, without `@`.
+Arrays name the existing writer's fan-out. `Order`, `Freight`, `Pickup` and `Delivery` select
+the order, freight line or stop role. `ref` distinguishes SQL calls/archive rows sharing a
+destination, such as SID, SUN, SO and L06. These are supported bindings, not arbitrary SQL.
+
+Change a source by editing `src`. This quantity feeds the first-freight and additional-freight
+procedure inputs; its attached check follows the new source:
 
 ```powershell
-@{ destination = 'pilotOrderId'; source = 'record.dispatchOrderId'; cast = 'string' }
-@{ destination = 'uom'; value = 'GAL' }
-@{ destination = 'commodityName'; sources = @('item.productCode', 'item.wraProductDescription'); format = '{0} / {1}' }
+@{ src = '$.item.gallons'
+   dst = @('dx_add_neworder_stop.volume', 'dx_add_neworder_freight_to_stop.volume')
+   checks = @(@{ use = 'gallons'; message = 'no gallons on item {0}' }) }
 ```
 
-`Order`, `Freight`, `Pickup` and `Delivery` keep their canonical destinations. A row chooses
-`source`, `sources` plus a format, or a literal `value`. A source array uses the first truthy value
-(the existing reference-data fallbacks). `default` supplies the existing fallback; `blank = $true`
-also treats whitespace as absent. Casts are `string`, `nullable_string` and `datetime`; omitted
-casts preserve the source type. Input roots are `record`, `item`, `terminal`, `location`, `contract`,
-`context`, and `cfg.create` only. Credential and connection settings are not mapping inputs.
+A fixed source uses `src = @{ value = ... }`. For example, replace the bill-to row's
+`src = '$.create.billto'` with `src = @{ value = 'TESTBILL' }`, retaining its `dst` and `cast`.
+This changes the actual order procedure arguments and the derived archive bill-to, not just a label.
 
-The `Validation` table refers to a mapped field, so a source change follows through its check.
-For a formatted field, `part` selects its zero-based input (part 1 is the WRA description).
-Scalar checks use regex, for example `pattern = '\S'` for a nonblank value. Gallons use invariant
-positive-decimal parsing; scheduled windows use invariant date parsing and end-after-start.
-Validation order and messages preserve the prior identity/status/window/quantity/item precedence.
-One bad active item still holds the whole order. Regex evaluation has a one-second timeout.
-Pre-lookup checks can use only their available record/item/create data, not later reference or
-derived values. The reference join keys have the same restriction. Order-level checks cannot
-depend on an item. Validation, reference joins and aggregation share the available input context.
-Reference-cache miss checks resolve the same configured join fields, so a new mapped ID refreshes
-only its list and is reused once present; cache age and refresh policy are unchanged.
-Vendor order/item identity rows are shown in the table but cannot be overridden: replay, cache
-keys and outbound routing are operational contracts, not configurable payload formatting.
+Define a reusable validator under `Validators`, then attach its name to each row needing it.
+For an **optional, behavior-changing** ZIP rule, add:
 
-The loader uses `Import-PowerShellDataFile`, not script execution. Malformed configuration,
-unsupported targets/casts/checks and blank rejection messages refuse before the Pilot read.
-Mapping does not replace the TMW destination type/width contract. Eligibility, exact polling,
-reference enrichment, address completion, stop grouping, SQL transactions, retries, `EXISTS` and
-cache lifecycle remain code, not configurable expressions or validation failures. The released
-0.7.10 canonical orders, EDI archives, SQL and parameters are pinned by parity fixtures.
+```powershell
+zip = @{ kind = 'regex'; pattern = '^\d{5}(-\d{4})?$'; message = 'invalid ZIP on item {0}' }
+```
+
+Then change the Delivery ZIP row to:
+
+```powershell
+@{ src = '$.location.postalCode'; dst = 'stops.stp_zipcode'
+   phase = 'lookup'; checks = @('zip') }
+```
+
+This checks the looked-up postal code before address placeholders or SQL. `{0}` is the item ID.
+It is **not enabled by default**: missing references and partial addresses still stage for
+dispatch to complete. Reuse `zip` on the Pickup row to check terminal postal codes too.
+An attached check can override `message` or select a component with its own `src`; the bundled
+commodity row uses that to require the WRA description before combining it with product code.
+
+Checks inspect the selected source before fallbacks/casts. Regex uses invariant matching and a
+one-second timeout. Positive decimal and scheduled start/end checks remain typed, not regex.
+Existing identity/status/window/quantity/item rejection precedence is retained; lookup checks run
+after those checks and reference enrichment. One bad active item holds the entire order.
+`src` arrays without `format` select the first truthy value, preserving empty-string fallbacks.
+With `format`, all sources feed the existing .NET composite format. `default`, `blank`, and
+`cast` (`string`, `nullable_string`, `datetime`) retain their prior meanings.
+
+Reference-cache miss detection and enrichment use the same mapped join IDs. Identity rows remain
+fixed because cache keys, replay and outbound routing use them. SQL type/width checks, city-code
+resolution (`stops.stp_city` takes the name through the existing SQL city lookup), address completion,
+stop grouping, transaction scope, retries, `EXISTS` and cache expiry remain writer behavior.
+Archive records also derive from these business values; the mapping is not an editable ledger of
+every repeated archive slot. Generated IDs, raw payload metadata and writer constants such as GAL
+are not misleading editable SQL destinations. The old mapping format remains accepted for callers
+pinned to that file shape. Default canonical orders, archives, SQL and parameters retain the saved
+0.7.10 parity hashes.
 
 ### Intake
 

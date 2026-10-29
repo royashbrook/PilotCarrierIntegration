@@ -4,7 +4,10 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -12,6 +15,7 @@ jobs:
           persist-credentials: false
       - shell: pwsh
         run: |
+          $PSVersionTable | Format-Table
           Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
           # the manifest is the one list of pins: install exactly what it requires
           foreach ($r in (Import-PowerShellDataFile ./PilotCarrierIntegration/PilotCarrierIntegration.psd1).RequiredModules) { Install-Module $r.ModuleName -RequiredVersion $r.RequiredVersion -Scope CurrentUser -Force -AcceptLicense }

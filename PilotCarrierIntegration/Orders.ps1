@@ -107,6 +107,9 @@ function ConvertFrom-PilotOrder {
     $context.terminal = $terminal
     $context.location = $location
     $context.contract = $contract
+    foreach ($rule in @($Mapping.PostChecks | Where-Object { $null -ne $_ })) {
+      if (-not (Test-PilotMappingValue (Get-PilotCheckValue $Mapping $rule $context) $rule)) { throw ($rule.message -f $item.dispatchOrderItemId) }
+    }
     $freight = ConvertTo-PilotMappedObject $Mapping.Freight $context
 
     foreach ($stopSpec in @(
