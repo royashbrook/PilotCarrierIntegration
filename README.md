@@ -95,17 +95,16 @@ to accept or reject in TMW.
 
 - Orders are read over a rolling window starting `poll.lookback_days` before today (0 by default) and
   running `poll.window_days` (30 by default, at least 2; Pilot reads at most 30). Pilot's read
-  has no status filter, so one filter runs right after it: a status in `poll.include_statuses`
-  (Scheduled, `2`, by default), a scheduled window that ends after it starts, and at least one active
-  item, every one with gallons. An order that fails stays in Pilot and is read again next run.
+  has no status filter, so one filter runs right after it. Only Scheduled (`2`) orders can stage;
+  `poll.include_statuses` can restrict that, not admit other statuses. Every required field below
+  must be filled on every active item. An order that fails stays in Pilot and is read again next run.
 - `scheduledStartDateTime` and `scheduledEndDateTime` supply the TMW stop earliest/latest windows.
   `deliveryWindowStartDateTime` and `deliveryWindowEndDateTime` are ignored, including when populated.
   Missing or reversed scheduled timestamps are not replaced with those optional delivery fields.
 - `productCode / wraProductDescription` supplies the freight description, for example
   `91E10 / SUP` or `NO2ULS / DSL-AS`. The product code is what to lift and carries the octane. The
   WRA product says which tank it goes in: one code can go to different tanks, and the WRA long name
-  is not enough, since `Diesel` covers `DSL` and `DSL-AS`. A blank part is left out, and both blank
-  stage as `NO PRODUCT`.
+  is not enough, since `Diesel` covers `DSL` and `DSL-AS`. Both parts are required.
 - Every freight line stages in gallons. TMW's `dx_add_neworder_freight_to_stop` copies the count
   unit into the freight unit, so added lines pass a blank count unit and take the fuel default,
   like a stop's first line.
@@ -118,13 +117,40 @@ to accept or reject in TMW.
   after its last update, by the date inside it. A dry run keeps no cache.
 - Pilot's location, terminal and contract lists only fill in names and addresses, and TMW maps each
   stop by its id. The lists are kept in the cache (`reference-*.json`) and read from Pilot again when an order names an id the kept copy lacks, or once the kept
-  copy is older than `keep_days`. A missing id stages as `UNKNOWN`; an id the lists
+  copy is older than `keep_days`. A missing terminal or supplier id stages as `UNKNOWN`; an id the lists
   lack keeps the id. Either way that stop comes over with no address for people to finish in EDI. A
   partial address stages too, each missing part marked `MISSING` (state `??`).
 - One order is one transaction through TMW's own `dx_*` procedures, with a matching DX archive.
   The Pilot id is the key: an order already in TMW logs `EXISTS` and is left alone, changed or not.
 - The SQL checks `db_name()` against `tmw.expected_database` before it writes anything.
 - Orders stage in parallel (`tmw.max_parallel`) with retries (`tmw.retry_attempts`).
+
+### Required Fields (0.7.9)
+
+Blank means null, empty or whitespace. One incomplete active item holds the whole order before
+reference lookups or SQL staging. Its skip reason is logged only when new or changed. Terminal
+and supplier are the only optional source fields in this table.
+
+| Need | Pilot source | TMW destination | Check |
+|---|---|---|---|
+| When | `scheduledStartDateTime`, `scheduledEndDateTime` | Every stop's earliest/latest | Both dates valid; end after start |
+| Pickup | `lineOfOperationsSystemId` | Pickup company match value | Blank becomes `UNKNOWN` |
+| Quantity | `gallons` | Freight volume, `GAL` | Positive number |
+| Product | `productCode` + `wraProductDescription` | Commodity match value, `code / description`; code also supplies `L06` | Neither blank |
+| Supplier | `looSystemId` | Freight `SID` reference | Blank becomes `UNKNOWN` |
+| Delivery | `locationSystemId` | Delivery company match value | Not blank |
+| Identity | `dispatchOrderId`, each `dispatchOrderItemId` | Order `PO`/replay key; freight `OID`/`PO` | Not blank |
+| Status | `dispatchOrderStatusTypeId` | Intake filter | `2` (Scheduled) |
+
+Reference lists still only enrich display names and addresses. A missing reference row keeps its
+source id with no address; missing supplier display text remains `NO SUPPLIER`.
+Fixed values remain the configured trading partner, bill-to, division and SCAC, EDI state `10`,
+and freight unit `GAL`.
+
+0.7.9 removes the `customerLocationSystemId` delivery fallback, the product-code fallbacks to
+`wraProductId`/`wraProductSystemId`, and the WRA-only/`NO PRODUCT` commodity fallback. Missing delivery
+ids now hold the order at the intake check. A confirmed existing TMW order still logs `EXISTS`
+and is left alone; that operational outcome is separate from source validation.
 
 ```json
 {
