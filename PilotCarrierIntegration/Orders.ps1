@@ -214,12 +214,18 @@ function Get-PilotOrderSkipReason {
   $status = 0
   if (-not [int]::TryParse([string]$Record.dispatchOrderStatusTypeId, [ref]$status) -or $status -ne 2 -or $status -notin $Include) { return "status $($Record.dispatchOrderStatusTypeId) $($Record.dispatchOrderStatusTypeName)".Trim() }
   if ([string]::IsNullOrWhiteSpace([string]$Record.scheduledStartDateTime) -or [string]::IsNullOrWhiteSpace([string]$Record.scheduledEndDateTime)) { return 'no scheduled window' }
-  $start = [datetime]::MinValue; $end = [datetime]::MinValue
-  if (-not [datetime]::TryParse([string]$Record.scheduledStartDateTime, [ref]$start) -or -not [datetime]::TryParse([string]$Record.scheduledEndDateTime, [ref]$end)) { return 'invalid scheduled window' }
-  if ($end -le $start) { return 'scheduled window ends before it starts' }
+  $window = @()
+  foreach ($field in 'scheduledStartDateTime', 'scheduledEndDateTime') {
+    $value = $Record.$field
+    $date = [datetime]::MinValue
+    if ($value -is [datetime]) { $date = $value }
+    elseif (-not [datetime]::TryParse([string]$value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$date)) { return 'invalid scheduled window' }
+    $window += $date
+  }
+  if ($window[1] -le $window[0]) { return 'scheduled window ends before it starts' }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
   if (-not $items.Count) { return 'no active items' }
-  $empty = @($items | Where-Object { $gallons = 0d; -not [decimal]::TryParse([string]$_.gallons, [ref]$gallons) -or $gallons -le 0 })
+  $empty = @($items | Where-Object { $gallons = 0d; -not [decimal]::TryParse([string]$_.gallons, [Globalization.NumberStyles]::Float -bor [Globalization.NumberStyles]::AllowThousands, [Globalization.CultureInfo]::InvariantCulture, [ref]$gallons) -or $gallons -le 0 })
   if ($empty.Count) { return "no gallons on item $(@($empty.dispatchOrderItemId) -join ', ')" }
   foreach ($item in $items) {
     foreach ($field in @('dispatchOrderItemId', 'locationSystemId', 'productCode', 'wraProductDescription')) {

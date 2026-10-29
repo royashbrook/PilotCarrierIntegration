@@ -234,6 +234,28 @@ Describe 'Pilot order translation' {
 }
 
 Describe 'required order fields' {
+  It 'preserves native timestamps and invariant strings under <culture>' -ForEach @(
+    @{ culture = 'en-US' }, @{ culture = 'en-GB' }, @{ culture = 'de-DE' }
+  ) {
+    $prior = [Globalization.CultureInfo]::CurrentCulture
+    try {
+      [Globalization.CultureInfo]::CurrentCulture = [Globalization.CultureInfo]$culture
+      $native = Get-Content (Join-Path $fixtures 'pilot-order.json') -Raw | ConvertFrom-Json
+      $raw = $native[0]
+      $raw.scheduledStartDateTime | Should -BeOfType ([datetime])
+      $raw.scheduledEndDateTime = $raw.scheduledStartDateTime.AddMilliseconds(250)
+      Get-PilotOrderSkipReason $raw | Should -BeNullOrEmpty
+      (ConvertFrom-PilotOrder $raw $cfg $references).stops[0].latest.Ticks | Should -Be $raw.scheduledEndDateTime.Ticks
+      $raw.scheduledStartDateTime = '2026-07-27T23:12:00'
+      $raw.scheduledEndDateTime = '2026-07-28T05:48:00'
+      $raw.dispatchOrderItems[0].gallons = '0.5'
+      Get-PilotOrderSkipReason $raw | Should -BeNullOrEmpty
+      (ConvertFrom-PilotOrder $raw $cfg $references).stops[0].earliest | Should -Be ([datetime]'2026-07-27T23:12:00')
+      $raw.dispatchOrderItems[0].gallons = '1.2.3'
+      Get-PilotOrderSkipReason $raw | Should -Be 'no gallons on item 11888001'
+    } finally { [Globalization.CultureInfo]::CurrentCulture = $prior }
+  }
+
   It 'holds blank <field> (<kind>) before lookups and conversion' -ForEach @(
     foreach ($field in 'dispatchOrderId', 'scheduledStartDateTime', 'scheduledEndDateTime', 'dispatchOrderStatusTypeId', 'gallons', 'dispatchOrderItemId', 'locationSystemId', 'productCode', 'wraProductDescription') {
       foreach ($blank in @(@{ kind = 'null'; value = $null }, @{ kind = 'empty'; value = '' }, @{ kind = 'whitespace'; value = '  ' })) {
