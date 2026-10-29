@@ -209,20 +209,24 @@ function ConvertFrom-PilotOrder {
 
 # Required fields are checked before reference reads; the same checks backstop direct translation.
 function Get-PilotOrderSkipReason {
-  param([Parameter(Mandatory)]$Record, [int[]]$Include = @(2))
+  param([Parameter(Mandatory)]$Record, [int[]]$Include = @(2), $Window)
   if ([string]::IsNullOrWhiteSpace([string]$Record.dispatchOrderId)) { return 'no dispatchOrderId' }
   $status = 0
   if (-not [int]::TryParse([string]$Record.dispatchOrderStatusTypeId, [ref]$status) -or $status -ne 2 -or $status -notin $Include) { return "status $($Record.dispatchOrderStatusTypeId) $($Record.dispatchOrderStatusTypeName)".Trim() }
   if ([string]::IsNullOrWhiteSpace([string]$Record.scheduledStartDateTime) -or [string]::IsNullOrWhiteSpace([string]$Record.scheduledEndDateTime)) { return 'no scheduled window' }
-  $window = @()
+  $dates = @()
   foreach ($field in 'scheduledStartDateTime', 'scheduledEndDateTime') {
     $value = $Record.$field
     $date = [datetime]::MinValue
     if ($value -is [datetime]) { $date = $value }
     elseif (-not [datetime]::TryParse([string]$value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$date)) { return 'invalid scheduled window' }
-    $window += $date
+    $dates += $date
   }
-  if ($window[1] -le $window[0]) { return 'scheduled window ends before it starts' }
+  if ([DateTimeOffset]$dates[1] -le [DateTimeOffset]$dates[0]) { return 'scheduled window ends before it starts' }
+  if ($Window.exact) {
+    $scheduled = [DateTimeOffset]$dates[0]
+    if ($scheduled -lt [DateTimeOffset]$Window.start -or $scheduled -ge [DateTimeOffset]$Window.end) { return 'scheduled start outside poll window' }
+  }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
   if (-not $items.Count) { return 'no active items' }
   $empty = @($items | Where-Object { $gallons = 0d; -not [decimal]::TryParse([string]$_.gallons, [Globalization.NumberStyles]::Float -bor [Globalization.NumberStyles]::AllowThousands, [Globalization.CultureInfo]::InvariantCulture, [ref]$gallons) -or $gallons -le 0 })
@@ -240,10 +244,26 @@ function Get-PilotIncludeStatuses($Cfg) {
   @(@(if ($Cfg.poll.include_statuses) { $Cfg.poll.include_statuses } else { 2 }) | ForEach-Object { [int]$_ })
 }
 
+function Get-PilotOrderWindow {
+  param($Cfg, [int]$WindowDays = 0, [datetime]$Now = (Get-Date))
+  if (-not $WindowDays) { $WindowDays = if ($Cfg.poll.window_days) { [int]$Cfg.poll.window_days } else { 30 } }
+  if ($WindowDays -lt 2) { throw "A $WindowDays-day Pilot window can drop loads that cross the boundary. Use 2 or more." }
+  $mode = if ($Cfg.poll.start_from) { [string]$Cfg.poll.start_from } else { 'today' }
+  if ($mode -notin @('today', 'now')) { throw "Unsupported poll.start_from '$mode'. Use today or now." }
+  $start = $(if ($mode -eq 'now') { $Now } else { $Now.Date }).AddDays(-[int]$Cfg.poll.lookback_days)
+  $end = $start.AddDays($WindowDays)
+  $queryEnd = $end
+  # The client discards clock time; cover the tail day before applying exact bounds locally.
+  if ($mode -eq 'now' -and $end.TimeOfDay -ne [TimeSpan]::Zero) { $queryEnd = $end.Date.AddDays(1) }
+  if ($mode -eq 'now' -and ($queryEnd.Date - $start.Date).Days -gt 30) { throw 'Exact poll window exceeds the 30-day Pilot date query. Reduce poll.window_days.' }
+  [pscustomobject]@{ start = $start; end = $end; queryStart = $start.Date; queryEnd = $queryEnd; exact = $mode -eq 'now' }
+}
+
 function Select-PilotOrdersToProcess {
   param([Parameter(Mandatory)][AllowEmptyCollection()]$Records, $Cfg)
   $include = Get-PilotIncludeStatuses $Cfg
-  @($Records) | Where-Object { -not (Get-PilotOrderSkipReason $_ $include) }
+  $window = Get-PilotOrderWindow $Cfg
+  @($Records) | Where-Object { -not (Get-PilotOrderSkipReason $_ $include $window) }
 }
 
 # the order cache: one file per Pilot order in the job's cache folder (settings "cache", default "cache"),
@@ -285,12 +305,8 @@ function Skip-PilotOrder([string]$CacheDir, $Id, [string]$Reason) {
 function Receive-PilotOrders {
   param($Cfg, $Session, [int]$WindowDays = 0)
 
-  if (-not $WindowDays) {
-    $WindowDays = if ($Cfg.poll.window_days) { [int]$Cfg.poll.window_days } else { 30 }
-  }
-  if ($WindowDays -lt 2) {
-    throw "A $WindowDays-day Pilot window can drop loads that cross the boundary. Use 2 or more."
-  }
+  $window = Get-PilotOrderWindow $Cfg $WindowDays
+  if ($window.exact) { Write-Log "Pilot window: $($window.start.ToString('o')) <= scheduled start < $($window.end.ToString('o'))" }
   $cacheDir = Get-PilotOrderCacheDir $Cfg
   # an order file is kept keep_days (7 by default) after its last update, read from the file itself:
   # Pilot sends loads a few days out, so an order that old is staged, entered by hand, or gone. one
@@ -303,9 +319,7 @@ function Receive-PilotOrders {
     }
   }
 
-  # the read starts poll.lookback_days before today (0 by default) and runs window_days from there
-  $start = [datetime]::Today.AddDays(-[int]$Cfg.poll.lookback_days)
-  $records = @(Get-PilotOrder -Session $Session -StartDate $start -EndDate $start.AddDays($WindowDays))
+  $records = @(Get-PilotOrder -Session $Session -StartDate $window.queryStart -EndDate $window.queryEnd)
   # Pilot's read has no status filter (probed 2026-09-29), so every check that needs only the order
   # itself runs here, before anything else is read
   $include = Get-PilotIncludeStatuses $Cfg
@@ -313,7 +327,7 @@ function Receive-PilotOrders {
   $staged = 0; $skipped = 0
   foreach ($record in $records) {
     if ((Get-PilotOrderCache $cacheDir $record.dispatchOrderId).state -eq 'staged') { $staged++; continue }
-    $reason = Get-PilotOrderSkipReason $record $include
+    $reason = Get-PilotOrderSkipReason $record $include $window
     if ($reason) { Skip-PilotOrder $cacheDir $record.dispatchOrderId $reason; $skipped++; continue }
     $open.Add($record)
   }

@@ -337,6 +337,122 @@ Describe 'required order fields' {
   }
 }
 
+Describe 'exact configured polling window' {
+  BeforeAll {
+    $script:fixedNow = [datetime]::SpecifyKind([datetime]'2026-10-29T12:00:00', [DateTimeKind]::Local)
+    $script:futureCfg = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $futureCfg.poll | Add-Member -NotePropertyName start_from -NotePropertyValue 'now' -Force
+    $futureCfg.poll | Add-Member -NotePropertyName lookback_days -NotePropertyValue 0 -Force
+    $futureCfg.poll.window_days = 14
+  }
+  It 'keeps the default midnight and lookback behavior' {
+    $legacy = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $legacy.poll | Add-Member -NotePropertyName lookback_days -NotePropertyValue 7 -Force
+    $legacy.poll.window_days = 30
+    $w = Get-PilotOrderWindow $legacy -Now $fixedNow
+    $w.exact | Should -BeFalse
+    $w.start | Should -Be $fixedNow.Date.AddDays(-7)
+    $w.queryEnd | Should -Be $fixedNow.Date.AddDays(23)
+  }
+  It 'reads covering dates but admits the configured exact 14-day interval' {
+    $w = Get-PilotOrderWindow $futureCfg -Now $fixedNow
+    $w.start | Should -Be $fixedNow
+    $w.end | Should -Be $fixedNow.AddDays(14)
+    $w.queryStart | Should -Be $fixedNow.Date
+    $w.queryEnd | Should -Be $fixedNow.Date.AddDays(15)
+  }
+  It 'accepts <name> at the exact scheduled-start boundary' -ForEach @(
+    @{ name = 'one tick before now'; ticks = -1L; accepted = $false },
+    @{ name = 'now'; ticks = 0L; accepted = $true },
+    @{ name = 'inside'; ticks = [TimeSpan]::FromDays(1).Ticks; accepted = $true },
+    @{ name = 'last tick'; ticks = [TimeSpan]::FromDays(14).Ticks - 1; accepted = $true },
+    @{ name = 'end'; ticks = [TimeSpan]::FromDays(14).Ticks; accepted = $false },
+    @{ name = 'after end'; ticks = [TimeSpan]::FromDays(15).Ticks; accepted = $false }
+  ) {
+    $w = Get-PilotOrderWindow $futureCfg -Now $fixedNow
+    $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $raw.scheduledStartDateTime = $fixedNow.AddTicks($ticks)
+    $raw.scheduledEndDateTime = $raw.scheduledStartDateTime.AddHours(1)
+    [string]::IsNullOrEmpty((Get-PilotOrderSkipReason $raw @(2) $w)) | Should -Be $accepted
+  }
+  It 'compares instants across native UTC and explicit-offset representations under <culture>' -ForEach @(
+    @{ culture = 'en-US' }, @{ culture = 'en-GB' }, @{ culture = 'de-DE' }
+  ) {
+    $old = [cultureinfo]::CurrentCulture
+    try {
+      [cultureinfo]::CurrentCulture = [cultureinfo]$culture
+      $w = Get-PilotOrderWindow $futureCfg -Now $fixedNow
+      foreach ($ticks in -1L, 0L) {
+        $instant = [DateTimeOffset]$fixedNow.AddTicks($ticks)
+        foreach ($start in @($instant.UtcDateTime, $instant.ToOffset([TimeSpan]::FromHours(5)).ToString('o'))) {
+          $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+          $raw.scheduledStartDateTime = $start
+          $raw.scheduledEndDateTime = $instant.AddHours(1).ToString('o')
+          [string]::IsNullOrEmpty((Get-PilotOrderSkipReason $raw @(2) $w)) | Should -Be ($ticks -eq 0)
+        }
+      }
+    } finally { [cultureinfo]::CurrentCulture = $old }
+  }
+  It 'captures the clock once and filters before lookups, including the partial last day' {
+    $records = foreach ($days in -1, 0, 13, 14) {
+      $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $raw.dispatchOrderId = 100 + $days
+      $raw.scheduledStartDateTime = $fixedNow.AddDays($days).AddMinutes(1)
+      $raw.scheduledEndDateTime = $raw.scheduledStartDateTime.AddHours(1)
+      $raw
+    }
+    Mock Get-Date { $fixedNow }
+    Mock Get-PilotOrder { $records }
+    Mock Get-PilotReferenceData { $references }
+    Mock Write-Log
+    @(Receive-PilotOrders $futureCfg $session).pilotOrderId | Should -Be @('100', '113')
+    Should -Invoke Get-Date -Times 1 -Exactly
+    Should -Invoke Get-PilotOrder -Times 1 -Exactly -ParameterFilter { $StartDate -eq $fixedNow.Date -and $EndDate -eq $fixedNow.Date.AddDays(15) }
+    Should -Invoke Get-PilotReferenceData -Times 1 -Exactly -ParameterFilter { @($Records).dispatchOrderId -join ',' -eq '100,113' }
+  }
+  It 'uses the same bounds in the standalone selector' {
+    $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $raw.scheduledStartDateTime = $fixedNow.AddMinutes(-1)
+    $raw.scheduledEndDateTime = $fixedNow.AddHours(1)
+    Mock Get-Date { $fixedNow }
+    @(Select-PilotOrdersToProcess @($raw) $futureCfg).Count | Should -Be 0
+  }
+  It 'leaves a retained staged entry unchanged even when its start is now past' {
+    $cachedCfg = $futureCfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $cachedCfg | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'future-staged') -Force
+    $dir = Get-PilotOrderCacheDir $cachedCfg
+    Set-PilotOrderCache $dir $rawOrder.dispatchOrderId 'staged' 'synthetic-tmw-id'
+    $path = Join-Path $dir "$($rawOrder.dispatchOrderId).json"
+    $before = (Get-FileHash $path).Hash
+    Mock Get-Date { $fixedNow }
+    Mock Get-PilotOrder { @($rawOrder) }
+    Mock Get-PilotReferenceData { throw 'staged must not read references' }
+    Mock Write-Log
+    @(Receive-PilotOrders $cachedCfg $session).Count | Should -Be 0
+    (Get-FileHash $path).Hash | Should -Be $before
+    Should -Invoke Get-PilotReferenceData -Times 0 -Exactly
+  }
+  It 'keeps both horizon and lookback configurable' {
+    $branch = $futureCfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $branch.poll.window_days = 7
+    $branch.poll.lookback_days = 2
+    $w = Get-PilotOrderWindow $branch -Now $fixedNow
+    $w.start | Should -Be $fixedNow.AddDays(-2)
+    $w.end | Should -Be $fixedNow.AddDays(5)
+  }
+  It 'refuses invalid anchors and overlong date-only requests before reading Pilot' {
+    $bad = $futureCfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $bad.poll.start_from = 'invalid'
+    Mock Get-PilotOrder { throw 'must not read' }
+    { Receive-PilotOrders $bad $session } | Should -Throw '*poll.start_from*'
+    $bad.poll.start_from = 'now'
+    $bad.poll.window_days = 30
+    Mock Get-Date { $fixedNow }
+    { Receive-PilotOrders $bad $session } | Should -Throw '*30-day Pilot date query*'
+    Should -Invoke Get-PilotOrder -Times 0 -Exactly
+  }
+}
+
 Describe 'poll window and filtering' {
   It 'refuses a one-day window that can drop straddling loads' {
     { Receive-PilotOrders ([pscustomobject]@{}) $session 1 } | Should -Throw

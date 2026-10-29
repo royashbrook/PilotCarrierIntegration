@@ -98,6 +98,16 @@ to accept or reject in TMW.
   has no status filter, so one filter runs right after it. Only Scheduled (`2`) orders can stage;
   `poll.include_statuses` can restrict that, not admit other statuses. Every required field below
   must be filled on every active item. An order that fails stays in Pilot and is read again next run.
+- Set `poll.start_from` to `now` for an exact scheduled-start window, for example
+  `"poll": { "start_from": "now", "lookback_days": 0, "window_days": 14, "include_statuses": [2] }`.
+  The run captures the clock once: scheduled start must be at or after that instant and before
+  14 calendar days later, using the runner's local calendar. Explicit offsets and native UTC dates
+  are compared as instants. Pilot's client sends dates only, so the API query covers whole days
+  around that interval; the exact filter runs before reference lookups or translation. A partial
+  tail day needs one extra query day, so `now` mode refuses a covering query over Pilot's 30-day
+  limit. Both day settings remain configurable. Omitted `start_from` (or `today`) keeps the existing
+  midnight behavior. Already-staged cache entries are not rewritten, and orders starting before the
+  lower bound are no longer eligible for a late-arrival catch-up.
 - `scheduledStartDateTime` and `scheduledEndDateTime` supply the TMW stop earliest/latest windows.
   `deliveryWindowStartDateTime` and `deliveryWindowEndDateTime` are ignored, including when populated.
   Missing or reversed scheduled timestamps are not replaced with those optional delivery fields.
