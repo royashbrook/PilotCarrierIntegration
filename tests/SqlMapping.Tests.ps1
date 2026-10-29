@@ -200,6 +200,8 @@ Describe 'physical SQL bindings with standard JSONPath selectors' {
     @{ name = 'bad reusable regex'; old = "pattern = '\S'"; replacement = "pattern = '['" },
     @{ name = 'unknown attached validator'; old = "use = 'nonblank'"; replacement = "use = 'missing_validator'" },
     @{ name = 'validator context override'; old = "nonblank = @{ kind = 'regex'"; replacement = "nonblank = @{ phase = 'lookup'; kind = 'regex'" }
+    @{ name = 'ignored typed-validator pattern'; old = "gallons = @{ kind = 'positive_decimal'"; replacement = "gallons = @{ pattern = '^NEVER$'; kind = 'positive_decimal'" },
+    @{ name = 'ignored window source override'; old = "checks = @('scheduled')"; replacement = "checks = @(@{ use = 'scheduled'; src = '$.order.notUsed' })" }
   ) {
     $text = $sqlText.Replace($old, $replacement)
     $text | Should -Not -Be $sqlText

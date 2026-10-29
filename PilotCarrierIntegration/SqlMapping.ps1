@@ -80,7 +80,13 @@ function Read-PilotOrderMapping($Cfg) {
         $use = if ($check -is [string]) { $check } else { $check.use }
         if (-not $spec.Validators.ContainsKey($use)) { throw "Unknown mapping validator: $use" }
         $definition = $spec.Validators[$use]
-        if (@($definition.Keys | Where-Object { $_ -cnotin 'kind', 'pattern', 'message', 'missing', 'invalid', 'reversed' }).Count) { throw 'Unsupported reusable validator property.' }
+        $allowed = switch -CaseSensitive ($definition.kind) {
+          'regex' { @('kind', 'pattern', 'message') }
+          'positive_decimal' { @('kind', 'message') }
+          'window' { @('kind', 'missing', 'invalid', 'reversed') }
+          default { throw 'Unsupported mapping validator kind.' }
+        }
+        if (@($definition.Keys | Where-Object { $_ -cnotin $allowed }).Count) { throw 'Unsupported reusable validator property.' }
         $rule = @{ field = $field; kind = $definition.kind; phase = $phase }
         foreach ($property in $definition.Keys) { $rule[$property] = $definition[$property] }
         if ($check -isnot [string]) {
@@ -89,6 +95,7 @@ function Read-PilotOrderMapping($Cfg) {
           if ($check.src) { Assert-PilotJsonPath $check.src $roots; $rule.source = $check.src }
         }
         if ($rule.kind -eq 'window') {
+          if ($check -isnot [string] -and $check.Count -ne 1) { throw 'Window checks use their mapped start/end and named rejection messages.' }
           if ($field -ne 'Order.deliveryWindowStart' -or $phase -ne 'input') { throw 'Window check belongs on the scheduled start binding.' }
           foreach ($property in 'missing', 'invalid', 'reversed') { if ([string]::IsNullOrWhiteSpace([string]$rule[$property])) { throw 'Window check requires rejection messages.' } }
           if ($map.Validation.window) { throw 'Repeated scheduled window check.' }
