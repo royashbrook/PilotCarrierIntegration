@@ -467,7 +467,8 @@ Describe 'poll window and filtering' {
     )
     @(Select-PilotOrdersToProcess $records $cfg).dispatchOrderId | Should -Be @(1)
     @($records | ForEach-Object { Get-PilotOrderSkipReason $_ @(2) }) | Should -Be @(
-      'status 4 Kiosked', 'status 1', 'no scheduled window', 'scheduled window ends before it starts', 'no active items', 'no gallons on item 8')
+      'status 4 Kiosked', 'status 1', 'no scheduled window', 'scheduled window ends before it starts', 'no active items',
+      'no gallons on item 8; no locationSystemId on item 8; no productCode on item 8; no wraProductDescription on item 8')
     $cfg2 = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $cfg2.poll.include_statuses = @(1, 2)
     @(Select-PilotOrdersToProcess $records $cfg2).dispatchOrderId | Should -Be @(1)
@@ -667,7 +668,7 @@ Describe 'direct TMW DataExchange staging' {
     (New-DxArchivePlan $back $cfg $now).fingerprint | Should -Be (New-DxArchivePlan $canonical $cfg $now).fingerprint
     (New-TmwOrderCommand $back $cfg -Now $now).sql | Should -Be (New-TmwOrderCommand $canonical $cfg -Now $now).sql
   }
-  It 'keeps the Pilot record and reference rows a staged order was staged from, and none for a skip' {
+  It 'keeps the Pilot record and reference rows a staged order was staged from, and the record alone for a skip' {
     Mock Write-Log
     Mock Write-TmwOrders { @([pscustomobject]@{ ok = $true; action = 'CREATED'; pilot_order_id = '10877997'; order_number = '10686900'; edistate = 10 }) }
     $dir = Join-Path $TestDrive 'payload-job'
@@ -682,10 +683,12 @@ Describe 'direct TMW DataExchange staging' {
     $kept.references.terminals.'14673'.name | Should -Be 'EXAMPLE TERMINAL'
     $kept.references.locations.'55979' | Should -Not -BeNullOrEmpty
     $kept.references.contracts.'10180'.contractName | Should -Be 'CARGILL'
-    Skip-PilotOrder (Join-Path $dir 'cache') 10877998 'status 4'
-    (Get-Content (Join-Path $dir 'cache/10877998.json') -Raw | ConvertFrom-Json).PSObject.Properties.Name | Should -Not -Contain 'pilot'
+    Skip-PilotOrder (Join-Path $dir 'cache') 10877998 'status 4' $rawOrder
+    $skipped = Get-Content (Join-Path $dir 'cache/10877998.json') -Raw | ConvertFrom-Json
+    $skipped.pilot.dispatchOrderItems[0].wraProductLongName | Should -Be 'Bio Diesel B99'
+    $skipped.PSObject.Properties.Name | Should -Not -Contain 'references'
   }
-  It 'keeps no Pilot record for an order TMW already had, since TMW was not built from it' {
+  It 'keeps the record for an order TMW already had, but not the reference rows, since TMW was not built from it' {
     Mock Write-Log
     Mock Write-TmwOrders { @([pscustomobject]@{ ok = $true; action = 'EXISTS'; pilot_order_id = '10877997'; order_number = '10686900'; edistate = 10 }) }
     $changed = $canonical | ConvertTo-Json -Depth 30 | ConvertFrom-Json
@@ -697,8 +700,30 @@ Describe 'direct TMW DataExchange staging' {
     $kept = Get-Content (Join-Path $dir 'cache/10877997.json') -Raw | ConvertFrom-Json
     $kept.state | Should -Be 'staged'
     $kept.tmw_order | Should -Be '10686900'
-    $kept.PSObject.Properties.Name | Should -Not -Contain 'pilot'
+    $kept.pilot.dispatchOrderItems[0].gallons | Should -Be 9999
     $kept.PSObject.Properties.Name | Should -Not -Contain 'references'
+  }
+  It 'rewrites a skipped order only when its reason or its record changes' {
+    Mock Write-Log
+    $dir = Join-Path $TestDrive 'skip-record'
+    Skip-PilotOrder $dir 10877997 'status 4' $rawOrder
+    $first = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
+    $first.pilot.dispatchOrderItems[0].gallons | Should -Be 4700
+    Skip-PilotOrder $dir 10877997 'status 4' $rawOrder
+    (Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json).updated_at | Should -Be $first.updated_at
+    $changed = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $changed.dispatchOrderItems[0].gallons = 9999
+    Skip-PilotOrder $dir 10877997 'status 4' $changed
+    $second = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
+    $second.pilot.dispatchOrderItems[0].gallons | Should -Be 9999
+    $second.pilot_hash | Should -Not -Be $first.pilot_hash
+    Should -Invoke Write-Log -Times 1 -Exactly
+  }
+  It 'names every failing check, not only the first' {
+    $raw = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $raw.dispatchOrderItems[0].gallons = 0
+    $raw.dispatchOrderItems[0].productCode = ''
+    Get-PilotOrderSkipReason $raw | Should -Be 'no gallons on item 11888001; no productCode on item 11888001'
   }
 }
 }

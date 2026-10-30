@@ -93,8 +93,8 @@ plans and names what would go, and sends nothing.
 0.8.0 translates each order through one field map, `Orders/Map.ps1`. Every value in a staged order
 comes from one row: `src` is a path into what Pilot sent (order, item, terminal, location, contract)
 or the settings, `dst` is the property on the order, pickup, delivery or freight object the writer
-stages. A row with a `check` runs it before anything else is read, in list order, and the first
-failure is the skip reason, so the top of the map is the required-fields table. A check is a named
+stages. A row with a `check` runs it before anything else is read, in list order, and every failing
+check is a skip reason, joined, so the top of the map is the required-fields table. A check is a named
 regex or script block (`required`, `positive`). The order object carries only what the writer and
 the cache read, and values stay as Pilot sent them. The order code is one folder, split by what
 changes together: `Map`, `Translate`, `Cache`, `Read`, `Write` and `Run`, whose header is the flow.
@@ -130,12 +130,13 @@ to accept or reject in TMW.
   unit into the freight unit, so added lines pass a blank count unit and take the fuel default,
   like a stop's first line.
 - The cache folder (`cache`, default `cache`) keeps one file per Pilot order: `staged` with its TMW
-  order, or `skipped` with the reason. A staged order's file also keeps the Pilot order record and
-  the location, terminal and contract rows it was staged from, written once when the order is
-  created in TMW, so what Pilot sent can be checked later. An order TMW already had keeps no record,
-  since TMW was not built from this read. A staged order is passed over before anything else, and a skip
-  reason is logged only when it is new or changes. An order file goes `keep_days` (7 by default)
-  after its last update, by the date inside it. A dry run keeps no cache.
+  order, or `skipped` with every reason, joined. Each file keeps the last record Pilot sent for the
+  order (`pilot`, with its hash), rewritten only when the reason or the record changes, so what
+  Pilot sent can be shown later. An order created in TMW also keeps the location, terminal and
+  contract rows it was built from; an order TMW already had keeps the record alone, since TMW was
+  not built from this read. A staged order is passed over before anything else, and a skip reason
+  is logged only when it is new or changes. An order file goes `keep_days` (7 by default) after its
+  last update, by the date inside it. A dry run keeps no cache.
 - Pilot's location, terminal and contract lists only fill in names and addresses, and TMW maps each
   stop by its id. The lists are kept in the cache (`reference-*.json`) and read from Pilot again when an order names an id the kept copy lacks, or once the kept
   copy is older than `keep_days`. A missing terminal or supplier id stages as `UNKNOWN`; an id the lists

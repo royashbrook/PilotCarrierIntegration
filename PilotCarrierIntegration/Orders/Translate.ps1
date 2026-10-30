@@ -22,14 +22,14 @@ function Test-PilotCheck([string]$Name, $Value) {
   if ($check -is [scriptblock]) { & $check $Value } else { [string]$Value -match $check }
 }
 
-# the first check in map order that fails, as the skip reason, naming every item that failed it
+# every check in map order that fails, one reason each, naming every item that failed it
 function Get-PilotMapReason($Rows, [object[]]$Contexts) {
   foreach ($row in $Rows) {
     foreach ($path in @($row.src)) {
       $bad = @($Contexts | Where-Object { -not (Test-PilotCheck $row.check (Resolve-PilotPath $_ $path)) })
       if ($bad.Count) {
         $items = @($bad | ForEach-Object { $_.item.dispatchOrderItemId })
-        return 'no {0}{1}' -f $path.Split('.')[-1], $(if ($bad[0].ContainsKey('item')) { ' on item ' + ($items -join ', ') })
+        'no {0}{1}' -f $path.Split('.')[-1], $(if ($bad[0].ContainsKey('item')) { ' on item ' + ($items -join ', ') })
       }
     }
   }
@@ -93,31 +93,34 @@ function ConvertFrom-PilotOrder {
   }
 }
 
-# why a Pilot order is not staged this run, or nothing for a good load. the map's checked rows run in
-# list order, with the checks that span fields (status, the scheduled window, active items) between the
-# order rows and the item rows. it reads only the order itself, so it runs before anything else is read
+# why a Pilot order is not staged this run, every reason joined, or nothing for a good load. the map's
+# checked rows run in list order, with the checks that span fields (status, the scheduled window, active
+# items) between the order rows and the item rows. it reads only the order itself, so it runs before
+# anything else is read
 function Get-PilotOrderSkipReason {
   param([Parameter(Mandatory)]$Record, [int[]]$Include = @(2), $Window)
   $rows = @($script:PilotOrderMap | Where-Object check)
-  $reason = Get-PilotMapReason @($rows | Where-Object dst -like 'order.*') @(@{ order = $Record })
-  if ($reason) { return $reason }
+  $reasons = [Collections.Generic.List[string]]::new()
+  $reasons.AddRange([string[]]@(Get-PilotMapReason @($rows | Where-Object dst -like 'order.*') @(@{ order = $Record })))
   $status = 0
-  if (-not [int]::TryParse([string]$Record.dispatchOrderStatusTypeId, [ref]$status) -or $status -ne 2 -or $status -notin $Include) { return "status $($Record.dispatchOrderStatusTypeId) $($Record.dispatchOrderStatusTypeName)".Trim() }
-  if ([string]::IsNullOrWhiteSpace([string]$Record.scheduledStartDateTime) -or [string]::IsNullOrWhiteSpace([string]$Record.scheduledEndDateTime)) { return 'no scheduled window' }
-  $dates = @()
-  foreach ($field in 'scheduledStartDateTime', 'scheduledEndDateTime') {
-    $value = $Record.$field
-    $date = [datetime]::MinValue
-    if ($value -is [datetime]) { $date = $value }
-    elseif (-not [datetime]::TryParse([string]$value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$date)) { return 'invalid scheduled window' }
-    $dates += $date
-  }
-  if ([DateTimeOffset]$dates[1] -le [DateTimeOffset]$dates[0]) { return 'scheduled window ends before it starts' }
-  if ($Window.exact) {
-    $scheduled = [DateTimeOffset]$dates[0]
-    if ($scheduled -lt [DateTimeOffset]$Window.start -or $scheduled -ge [DateTimeOffset]$Window.end) { return 'scheduled start outside poll window' }
+  if (-not [int]::TryParse([string]$Record.dispatchOrderStatusTypeId, [ref]$status) -or $status -ne 2 -or $status -notin $Include) { $reasons.Add("status $($Record.dispatchOrderStatusTypeId) $($Record.dispatchOrderStatusTypeName)".Trim()) }
+  if ([string]::IsNullOrWhiteSpace([string]$Record.scheduledStartDateTime) -or [string]::IsNullOrWhiteSpace([string]$Record.scheduledEndDateTime)) { $reasons.Add('no scheduled window') }
+  else {
+    $dates = @()
+    foreach ($field in 'scheduledStartDateTime', 'scheduledEndDateTime') {
+      $value = $Record.$field
+      $date = [datetime]::MinValue
+      if ($value -is [datetime]) { $date = $value }
+      elseif (-not [datetime]::TryParse([string]$value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$date)) { $reasons.Add('invalid scheduled window'); break }
+      $dates += $date
+    }
+    if ($dates.Count -eq 2) {
+      if ([DateTimeOffset]$dates[1] -le [DateTimeOffset]$dates[0]) { $reasons.Add('scheduled window ends before it starts') }
+      if ($Window.exact -and ([DateTimeOffset]$dates[0] -lt [DateTimeOffset]$Window.start -or [DateTimeOffset]$dates[0] -ge [DateTimeOffset]$Window.end)) { $reasons.Add('scheduled start outside poll window') }
+    }
   }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
-  if (-not $items.Count) { return 'no active items' }
-  Get-PilotMapReason @($rows | Where-Object dst -notlike 'order.*') @($items | ForEach-Object { @{ order = $Record; item = $_ } })
+  if (-not $items.Count) { $reasons.Add('no active items') }
+  else { $reasons.AddRange([string[]]@(Get-PilotMapReason @($rows | Where-Object dst -notlike 'order.*') @($items | ForEach-Object { @{ order = $Record; item = $_ } }))) }
+  if ($reasons.Count) { $reasons -join '; ' }
 }
