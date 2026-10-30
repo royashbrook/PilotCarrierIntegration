@@ -13,30 +13,29 @@ function New-PilotReferenceIndex {
   $index
 }
 
-# Pilot's location, terminal and contract lists only fill in names and addresses, and they rarely change.
-# Each list is kept in the cache folder and read from Pilot again only when an order names an id the
-# kept copy lacks, or when the kept copy is older than keep_days. Without a cache folder (a dry run, a test) the lists are read every time.
+# Pilot's three reference lists, each its own endpoint: the item field that names a row, and the row's key.
+$script:PilotReferenceLists = @(
+  @{ name = 'location'; id = 'locationSystemId';         key = 'locationSystemId'; read = 'Get-PilotLocation' }
+  @{ name = 'terminal'; id = 'lineOfOperationsSystemId'; key = 'terminalId';       read = 'Get-PilotTerminal' }
+  @{ name = 'contract'; id = 'looSystemId';              key = 'contractSystemId'; read = 'Get-PilotContract' }
+)
+
+# The lists only fill in names and addresses, and they rarely change. Each is kept in the cache folder
+# and read from Pilot again only when an order names an id the kept copy lacks, or when the kept copy
+# is older than keep_days. Without a cache folder (a dry run, a test) the lists are read every time.
 function Get-PilotReferenceData {
   param($Session, [AllowEmptyCollection()]$Records = @(), [string]$CacheDir, [int]$KeepDays = 7)
-  $lists = @(
-    @{ name = 'location'; key = 'locationSystemId'; read = { Get-PilotLocation -Session $Session }
-      ids = { $_.dispatchOrderItems.locationSystemId } }
-    @{ name = 'terminal'; key = 'terminalId'; read = { Get-PilotTerminal -Session $Session }
-      ids = { $_.dispatchOrderItems.lineOfOperationsSystemId } }
-    @{ name = 'contract'; key = 'contractSystemId'; read = { Get-PilotContract -Session $Session }
-      ids = { $_.dispatchOrderItems.looSystemId } }
-  )
   $data = [ordered]@{}
-  foreach ($list in $lists) {
+  foreach ($list in $script:PilotReferenceLists) {
     $path = if ($CacheDir) { Join-Path $CacheDir "reference-$($list.name).json" }
     $kept = if ($path -and (Test-Path -LiteralPath $path)) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }
     # a list kept by 0.5.0 is a bare array with no read_at: treat it as stale and read it again
     $readAt = if ($kept -isnot [array]) { $kept.read_at }
     $rows = if ($readAt -and ([datetime]$readAt).ToUniversalTime() -gt [datetime]::UtcNow.AddDays(-$KeepDays)) { @($kept.rows) } else { $null }
     $index = if ($null -ne $rows) { New-PilotReferenceIndex $rows $list.key } else { $null }
-    $needed = @($Records | ForEach-Object $list.ids | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+    $needed = @($Records.dispatchOrderItems.($list.id) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
     if ($null -eq $index -or @($needed | Where-Object { -not $index.ContainsKey($_) }).Count) {
-      $rows = @(& $list.read)
+      $rows = @(& $list.read -Session $Session)
       $index = New-PilotReferenceIndex $rows $list.key
       if ($path) {
         $null = New-Item -ItemType Directory -Force $CacheDir
@@ -52,12 +51,98 @@ function Get-PilotReferenceData {
 # a partial address from Pilot still stages: each missing part is marked so dispatch sees what to finish
 function Complete-PilotAddress {
   param([Parameter(Mandatory)]$Address)
-  if (-not ($Address.address1 -or $Address.city -or $Address.state -or $Address.zip)) { return $Address }
-  foreach ($field in @('address1', 'city', 'zip')) {
-    if ([string]::IsNullOrWhiteSpace([string]$Address.$field)) { $Address.$field = 'MISSING' }
+  if (-not (@($Address.address1, $Address.city, $Address.state, $Address.zip) -match '\S')) { return $Address }
+  foreach ($part in @{ address1 = 'MISSING'; city = 'MISSING'; zip = 'MISSING'; state = '??' }.GetEnumerator()) {
+    if ([string]::IsNullOrWhiteSpace([string]$Address.($part.Key))) { $Address.($part.Key) = $part.Value }
   }
-  if ([string]::IsNullOrWhiteSpace([string]$Address.state)) { $Address.state = '??' }
   $Address
+}
+
+# The field map. Every value in a staged order comes from one row. `to` is the field the writer reads
+# (order, pickup, delivery or freight); `from` is a path into what Pilot sent (order, item, terminal,
+# location, contract) or the settings (cfg). Several `from` paths take the first that is not blank,
+# `format` joins them instead, `value` is a fixed value, and `default` fills a blank. A row with a
+# `check` runs it on each `from` before anything else is read, in list order, and the first failure is
+# the skip reason: the checked rows lead, so the top of the list is the required-fields table. A check
+# is a regex the value must match or a script block. Blank is null, empty or whitespace. Values stay as
+# Pilot sent them; the writer casts what it sends. The TMW column each field lands in is the README table.
+$script:PilotOrderChecks = @{
+  required = '\S'
+  positive = { param($v) $d = 0d; [decimal]::TryParse([string]$v, [Globalization.NumberStyles]::Float -bor [Globalization.NumberStyles]::AllowThousands, [Globalization.CultureInfo]::InvariantCulture, [ref]$d) -and $d -gt 0 }
+}
+$script:PilotOrderMap = @(
+  @{ to = 'order.pilotOrderId';         from = 'order.dispatchOrderId';      check = 'required' }
+  @{ to = 'freight.quantity';           from = 'item.gallons';               check = 'positive' }
+  @{ to = 'freight.pilotOrderItemId';   from = 'item.dispatchOrderItemId';   check = 'required' }
+  @{ to = 'delivery.locationCode';      from = 'item.locationSystemId';      check = 'required' }
+  # what to lift (the code carries the octane) and the WRA product (which tank): "Diesel" alone covers DSL and DSL-AS
+  @{ to = 'freight.commodityName';      from = 'item.productCode', 'item.wraProductDescription'; format = '{0} / {1}'; check = 'required' }
+  # the order; the stops take their window from these two
+  @{ to = 'order.pilotSourceOrderId';   from = 'order.sourceSystemOrderId' }
+  @{ to = 'order.deliveryWindowStart';  from = 'order.scheduledStartDateTime'; cast = 'datetime' }
+  @{ to = 'order.deliveryWindowEnd';    from = 'order.scheduledEndDateTime';   cast = 'datetime' }
+  @{ to = 'order.billto';               from = 'cfg.create.billto' }
+  # the pickup: the terminal, which Pilot may pick late, so a blank one stages UNKNOWN
+  @{ to = 'pickup.type';                value = 'PU' }
+  @{ to = 'pickup.locationCode';        from = 'item.lineOfOperationsSystemId'; default = 'UNKNOWN' }
+  @{ to = 'pickup.name';                from = 'terminal.name';              default = 'NO TERMINAL' }
+  @{ to = 'pickup.address1';            from = 'terminal.address' }
+  @{ to = 'pickup.address2';            from = 'terminal.address2' }
+  @{ to = 'pickup.city';                from = 'terminal.city' }
+  @{ to = 'pickup.state';               from = 'terminal.stateSystemCode', 'terminal.state' }
+  @{ to = 'pickup.zip';                 from = 'terminal.postalCode' }
+  # the delivery: the store
+  @{ to = 'delivery.type';              value = 'DR' }
+  @{ to = 'delivery.name';              from = 'location.description';       default = 'NO LOCATION' }
+  @{ to = 'delivery.address1';          from = 'location.address1' }
+  @{ to = 'delivery.address2';          from = 'location.address2' }
+  @{ to = 'delivery.city';              from = 'location.city' }
+  @{ to = 'delivery.state';             from = 'location.stateCode' }
+  @{ to = 'delivery.zip';               from = 'location.postalCode' }
+  # the freight, one line per item; the supplier is the supply contract, which Pilot may also pick late
+  @{ to = 'freight.productCode';        from = 'item.productCode' }
+  @{ to = 'freight.supplierContractId'; from = 'item.looSystemId';           default = 'UNKNOWN' }
+  @{ to = 'freight.supplierName';       from = 'contract.contractName';      default = 'NO SUPPLIER' }
+)
+
+function Resolve-PilotPath($Context, [string]$Path) {
+  $value = $Context
+  foreach ($part in $Path.Split('.')) { $value = $value.$part }
+  $value
+}
+
+function Test-PilotCheck([string]$Name, $Value) {
+  $check = $script:PilotOrderChecks[$Name]
+  if ($check -is [scriptblock]) { & $check $Value } else { [string]$Value -match $check }
+}
+
+# the first check in map order that fails, as the skip reason, naming every item that failed it
+function Get-PilotMapReason($Rows, [object[]]$Contexts) {
+  foreach ($row in $Rows) {
+    foreach ($path in @($row.from)) {
+      $bad = @($Contexts | Where-Object { -not (Test-PilotCheck $row.check (Resolve-PilotPath $_ $path)) })
+      if ($bad.Count) {
+        $items = @($bad | ForEach-Object { $_.item.dispatchOrderItemId })
+        return 'no {0}{1}' -f $path.Split('.')[-1], $(if ($bad[0].ContainsKey('item')) { ' on item ' + ($items -join ', ') })
+      }
+    }
+  }
+}
+
+# one model object from a scope's rows, as the writer reads it
+function New-PilotMapObject([string]$Scope, $Context) {
+  $object = [ordered]@{}
+  foreach ($row in @($script:PilotOrderMap | Where-Object to -like "$Scope.*")) {
+    $values = @(foreach ($path in @($row.from)) { Resolve-PilotPath $Context $path })
+    $value = $null
+    if ($row.ContainsKey('value')) { $value = $row.value }
+    elseif ($row.format) { $value = $row.format -f $values }
+    else { foreach ($candidate in $values) { if ("$candidate" -match '\S') { $value = $candidate; break } } }
+    if ("$value" -notmatch '\S' -and $row.ContainsKey('default')) { $value = $row.default }
+    if ($row.cast) { $value = $value -as ($row.cast -as [type]) }
+    $object[$row.to.Split('.')[1]] = $value
+  }
+  [pscustomobject]$object
 }
 
 function ConvertFrom-PilotOrder {
@@ -69,148 +154,47 @@ function ConvertFrom-PilotOrder {
 
   $reason = Get-PilotOrderSkipReason $Record
   if ($reason) { throw "Pilot order $($Record.dispatchOrderId): $reason." }
+  $order = New-PilotMapObject order @{ order = $Record; cfg = $Cfg }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
-  $deliveryWindowStart = [datetime]$Record.scheduledStartDateTime
-  $deliveryWindowEnd = [datetime]$Record.scheduledEndDateTime
-
-  $stopsByKey = [ordered]@{}
   # the reference rows this order used, kept with it when it is staged
   $used = [ordered]@{ terminals = @{}; locations = @{}; contracts = @{} }
+  $stops = [ordered]@{}
   foreach ($item in $items) {
-    $terminalId = if (-not [string]::IsNullOrWhiteSpace([string]$item.lineOfOperationsSystemId)) { $item.lineOfOperationsSystemId }
-    $contractId = if (-not [string]::IsNullOrWhiteSpace([string]$item.looSystemId)) { $item.looSystemId }
-    $locationId = $item.locationSystemId
-
-    # Pilot's reference data only fills in names and addresses; TMW maps each stop by its id.
-    # A missing id stages as UNKNOWN, an id their reference data lacks keeps the id, and either
-    # way the stop comes over with no address for ops to finish in EDI.
-    $terminal = if ($null -ne $terminalId) { $References.terminals[[string]$terminalId] }
-    $location = $References.locations[[string]$locationId]
-    $contract = if ($null -ne $contractId) { $References.contracts[[string]$contractId] }
-    if ($terminal) { $used.terminals[[string]$terminalId] = $terminal }
-    if ($location) { $used.locations[[string]$locationId] = $location }
-    if ($contract) { $used.contracts[[string]$contractId] = $contract }
-    $supplierName = if ($contract.contractName) {
-      [string]$contract.contractName
-    } else {
-      'NO SUPPLIER'
+    $context = @{ order = $Record; item = $item; cfg = $Cfg }
+    # the lists only fill in names and addresses; TMW maps each stop by its id. an id their list lacks
+    # keeps the id, and the stop comes over with no address for ops to finish in EDI
+    foreach ($list in $script:PilotReferenceLists) {
+      $id = [string]$item.($list.id)
+      $context[$list.name] = $References."$($list.name)s"[$id]
+      if ($context[$list.name]) { $used["$($list.name)s"][$id] = $context[$list.name] }
     }
-    $supplierDescription = if ($contract.contractDescription) {
-      [string]$contract.contractDescription
-    } else {
-      $supplierName
-    }
-    $terminalAddress = if ($terminal) {
-      [pscustomobject]@{
-        address1 = $terminal.address
-        address2 = $terminal.address2
-        city = $terminal.city
-        state = if ($terminal.stateSystemCode) { $terminal.stateSystemCode } else { $terminal.state }
-        zip = $terminal.postalCode
+    $freight = New-PilotMapObject freight $context
+    # one stop per place, its freight lines in item order
+    foreach ($scope in 'pickup', 'delivery') {
+      $stop = Complete-PilotAddress (New-PilotMapObject $scope $context)
+      $key = '{0}|{1}' -f $stop.type, $stop.locationCode
+      if (-not $stops.Contains($key)) {
+        $stops[$key] = $stop | Add-Member -PassThru -NotePropertyMembers @{ earliest = $order.deliveryWindowStart; latest = $order.deliveryWindowEnd; freight = [Collections.Generic.List[object]]::new() }
       }
-    } else {
-      [pscustomobject]@{ address1 = $null; address2 = $null; city = $null; state = $null; zip = $null }
-    }
-    $locationAddress = if ($location) {
-      [pscustomobject]@{
-        address1 = $location.address1
-        address2 = $location.address2
-        city = $location.city
-        state = $location.stateCode
-        zip = $location.postalCode
-      }
-    } else {
-      [pscustomobject]@{ address1 = $null; address2 = $null; city = $null; state = $null; zip = $null }
-    }
-    $terminalAddress = Complete-PilotAddress $terminalAddress
-    $locationAddress = Complete-PilotAddress $locationAddress
-
-    # dispatch maps commodities from the product code and the WRA description together: the code is
-    # what to lift (it carries the octane), the WRA product says which tank it goes in. the WRA long
-    # name is not enough, "Diesel" covers DSL and DSL-AS, which go in different tanks
-    $commodityName = '{0} / {1}' -f $item.productCode, $item.wraProductDescription
-    $productCode = [string]$item.productCode
-    $freight = [pscustomobject]@{
-      freightNumber = $null
-      uom = 'GAL'
-      quantity = $item.gallons
-      weight = 0
-      commodityName = $commodityName
-      commodityCode = $productCode
-      productCode = $productCode
-      pilotOrderItemId = [string]$item.dispatchOrderItemId
-      pilotSourceItemId = [string]$item.sourceSystemOrderItemId
-      supplierContractId = if ($null -ne $contractId) { [string]$contractId } else { 'UNKNOWN' }
-      supplierName = $supplierName
-      supplierDescription = $supplierDescription
-      productSystemId = $item.productSystemId
-    }
-
-    foreach ($stopSpec in @(
-      [pscustomobject]@{
-        type = 'PU'
-        locationCode = if ($null -ne $terminalId) { [string]$terminalId } else { 'UNKNOWN' }
-        name = if ($terminal.name) { $terminal.name } else { 'NO TERMINAL' }
-        address = $terminalAddress
-      }
-      [pscustomobject]@{
-        type = 'DR'
-        locationCode = [string]$locationId
-        name = if ($location.description) { $location.description } else { 'NO LOCATION' }
-        address = $locationAddress
-      }
-    )) {
-      $key = '{0}|{1}|{2}|{3}' -f $stopSpec.type, $stopSpec.locationCode,
-        $deliveryWindowStart, $deliveryWindowEnd
-      if (-not $stopsByKey.Contains($key)) {
-        $stopsByKey[$key] = [pscustomobject]@{
-          stopNumber = $null
-          type = $stopSpec.type
-          locationCode = $stopSpec.locationCode
-          name = $stopSpec.name
-          address1 = $stopSpec.address.address1
-          address2 = $stopSpec.address.address2
-          city = $stopSpec.address.city
-          state = $stopSpec.address.state
-          zip = $stopSpec.address.zip
-          earliest = $deliveryWindowStart
-          latest = $deliveryWindowEnd
-          freight = [System.Collections.Generic.List[object]]::new()
-        }
-      }
-      $stopsByKey[$key].freight.Add($freight)
+      $stops[$key].freight.Add($freight)
     }
   }
 
-  $contractIds = @(
-    $items.looSystemId |
-      Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-      Sort-Object -Unique
-  )
-  $orderedStops = @($stopsByKey.Values | Where-Object type -eq 'PU') +
-    @($stopsByKey.Values | Where-Object type -eq 'DR')
-
-  [pscustomobject]@{
-    pilotOrderId = [string]$Record.dispatchOrderId
-    pilotGuid = $Record.dispatchOrderGuid
-    pilotSourceOrderId = [string]$Record.sourceSystemOrderId
-    pilotOrderItemIds = @($items.dispatchOrderItemId | ForEach-Object { [string]$_ })
-    contractSystemIds = $contractIds
-    deliveryWindowStart = $deliveryWindowStart
-    deliveryWindowEnd = $deliveryWindowEnd
-    billto = if ($Cfg.create.billto) { [string]$Cfg.create.billto } else { $null }
-    bolNumber = $Record.bolNumber
-    kiosked = [bool]$Record.kiosked -or [int]$Record.dispatchOrderStatusTypeId -eq 4
-    stops = $orderedStops
+  $order | Add-Member -PassThru -NotePropertyMembers @{
+    stops = @($stops.Values | Where-Object type -eq 'PU') + @($stops.Values | Where-Object type -eq 'DR')
     raw = $Record
     references = [pscustomobject]$used
   }
 }
 
-# Required fields are checked before reference reads; the same checks backstop direct translation.
+# why a Pilot order is not staged this run, or nothing for a good load. the map's checked rows run in
+# list order, with the checks that span fields (status, the scheduled window, active items) between the
+# order rows and the item rows. it reads only the order itself, so it runs before anything else is read
 function Get-PilotOrderSkipReason {
   param([Parameter(Mandatory)]$Record, [int[]]$Include = @(2), $Window)
-  if ([string]::IsNullOrWhiteSpace([string]$Record.dispatchOrderId)) { return 'no dispatchOrderId' }
+  $rows = @($script:PilotOrderMap | Where-Object check)
+  $reason = Get-PilotMapReason @($rows | Where-Object to -like 'order.*') @(@{ order = $Record })
+  if ($reason) { return $reason }
   $status = 0
   if (-not [int]::TryParse([string]$Record.dispatchOrderStatusTypeId, [ref]$status) -or $status -ne 2 -or $status -notin $Include) { return "status $($Record.dispatchOrderStatusTypeId) $($Record.dispatchOrderStatusTypeName)".Trim() }
   if ([string]::IsNullOrWhiteSpace([string]$Record.scheduledStartDateTime) -or [string]::IsNullOrWhiteSpace([string]$Record.scheduledEndDateTime)) { return 'no scheduled window' }
@@ -229,13 +213,7 @@ function Get-PilotOrderSkipReason {
   }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
   if (-not $items.Count) { return 'no active items' }
-  $empty = @($items | Where-Object { $gallons = 0d; -not [decimal]::TryParse([string]$_.gallons, [Globalization.NumberStyles]::Float -bor [Globalization.NumberStyles]::AllowThousands, [Globalization.CultureInfo]::InvariantCulture, [ref]$gallons) -or $gallons -le 0 })
-  if ($empty.Count) { return "no gallons on item $(@($empty.dispatchOrderItemId) -join ', ')" }
-  foreach ($item in $items) {
-    foreach ($field in @('dispatchOrderItemId', 'locationSystemId', 'productCode', 'wraProductDescription')) {
-      if ([string]::IsNullOrWhiteSpace([string]$item.$field)) { return "no $field on item $($item.dispatchOrderItemId)" }
-    }
-  }
+  Get-PilotMapReason @($rows | Where-Object to -notlike 'order.*') @($items | ForEach-Object { @{ order = $Record; item = $_ } })
 }
 
 function Get-PilotKeepDays($Cfg) { if ($Cfg.keep_days) { [int]$Cfg.keep_days } else { 7 } }

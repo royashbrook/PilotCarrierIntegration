@@ -19,14 +19,12 @@ Describe 'Pilot order translation' {
   It 'preserves Pilot order, source, item, terminal, location, contract, and product keys' {
     $canonical.pilotOrderId | Should -Be '10877997'
     $canonical.pilotSourceOrderId | Should -Be 'pilot-source-10877997'
-    @($canonical.pilotOrderItemIds) | Should -Be @('11888001')
+    $canonical.stops[0].freight[0].pilotOrderItemId | Should -Be '11888001'
     $canonical.stops[0].locationCode | Should -Be '14673'
     $canonical.stops[1].locationCode | Should -Be '55979'
-    @($canonical.contractSystemIds) | Should -Be @('10180')
     $canonical.stops[0].freight[0].supplierContractId | Should -Be '10180'
     $canonical.stops[0].freight[0].supplierName | Should -Be 'CARGILL'
-    $canonical.stops[0].freight[0].supplierDescription | Should -Be 'CARGILL INCORPORATED'
-    $canonical.stops[0].freight[0].commodityCode | Should -Be 'B99-UL'
+    $canonical.stops[0].freight[0].productCode | Should -Be 'B99-UL'
   }
   It 'describes the commodity with the product code and WRA description, nothing else' {
     $canonical.stops[0].freight[0].commodityName | Should -Be 'B99-UL / B99'
@@ -102,7 +100,6 @@ Describe 'Pilot order translation' {
 
     $converted = ConvertFrom-PilotOrder $multi $cfg $multiReferences
     @($converted.stops.type) | Should -Be @('PU', 'PU', 'DR', 'DR')
-    @($converted.contractSystemIds) | Should -Be @('10180', '10181')
     $converted.stops[1].freight[0].supplierContractId | Should -Be '10181'
     $converted.stops[1].freight[0].supplierName | Should -Be 'SECOND SUPPLIER'
   }
@@ -186,7 +183,6 @@ Describe 'Pilot order translation' {
     }
     $converted = ConvertFrom-PilotOrder $blankOrder $cfg $blank
     $converted.stops[0].freight[0].supplierName | Should -Be 'NO SUPPLIER'
-    $converted.stops[0].freight[0].supplierDescription | Should -Be 'NO SUPPLIER'
     @($converted.stops | Where-Object type -eq 'PU')[0].name | Should -Be 'NO TERMINAL'
     @($converted.stops | Where-Object type -eq 'DR')[0].name | Should -Be 'NO LOCATION'
     $converted.stops[0].freight[0].commodityName | Should -Be 'B99-UL / B99'
@@ -287,7 +283,6 @@ Describe 'required order fields' {
     $converted = ConvertFrom-PilotOrder $raw $cfg $references
     if ($field -eq 'looSystemId') {
       $converted.stops[0].freight[0].supplierContractId | Should -Be 'UNKNOWN'
-      @($converted.contractSystemIds).Count | Should -Be 0
     } else { $converted.stops[0].locationCode | Should -Be 'UNKNOWN' }
     { New-TmwOrderCommand $converted $cfg } | Should -Not -Throw
   }
@@ -317,7 +312,7 @@ Describe 'required order fields' {
     $raw.dispatchOrderItems[0].productSystemId = $null
     $raw.dispatchOrderItems[0].wraProductSystemId = $null
     Get-PilotOrderSkipReason $raw | Should -BeNullOrEmpty
-    (ConvertFrom-PilotOrder $raw $cfg $references).stops[0].freight[0].commodityCode | Should -Be 'B99-UL'
+    (ConvertFrom-PilotOrder $raw $cfg $references).stops[0].freight[0].productCode | Should -Be 'B99-UL'
   }
 
   It 'never uses the old delivery-location fallback' {
