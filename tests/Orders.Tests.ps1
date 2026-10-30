@@ -509,6 +509,29 @@ Describe 'poll window and filtering' {
       Should -Invoke Get-PilotReferenceData -ModuleName PilotCarrierIntegration -Times 0
       Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -ParameterFilter { $Message -eq 'Pilot  : 1 orders read, 1 already staged, 0 skipped, 0 to stage' }
   }
+  It 'keeps the latest record Pilot sent on a staged order, and what TMW was built from' {
+      $cached = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $cached | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'staged-refresh') -Force
+      $dir = Join-Path $TestDrive 'staged-refresh/cache'
+      Set-PilotOrderCache $dir 10877997 'staged' '10686484' $rawOrder $canonical.references
+      $first = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
+      Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($rawOrder) }
+      Mock Get-PilotReferenceData -ModuleName PilotCarrierIntegration { throw 'staged must not read references' }
+      Mock Write-Log -ModuleName PilotCarrierIntegration
+      @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
+      (Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json).updated_at | Should -Be $first.updated_at
+      $changed = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $changed.dispatchOrderItems[0].gallons = 9999
+      Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($changed) }
+      @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
+      $kept = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
+      $kept.state | Should -Be 'staged'
+      $kept.tmw_order | Should -Be '10686484'
+      $kept.pilot.dispatchOrderItems[0].gallons | Should -Be 9999
+      $kept.pilot_hash | Should -Not -Be $first.pilot_hash
+      $kept.references.terminals.'14673'.name | Should -Be 'EXAMPLE TERMINAL'
+      Should -Invoke Get-PilotReferenceData -ModuleName PilotCarrierIntegration -Times 0
+  }
 }
 
 Describe 'direct TMW DataExchange staging' {

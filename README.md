@@ -134,8 +134,9 @@ to accept or reject in TMW.
   order (`pilot`, with its hash), rewritten only when the reason or the record changes, so what
   Pilot sent can be shown later. An order created in TMW also keeps the location, terminal and
   contract rows it was built from; an order TMW already had keeps the record alone, since TMW was
-  not built from this read. A staged order is passed over before anything else, and a skip reason
-  is logged only when it is new or changes. An order file goes `keep_days` (7 by default) after its
+  not built from this read. A staged order is passed over before anything else (its record still
+  refreshed when Pilot's changes, its TMW order and reference rows kept), and a skip reason is
+  logged only when it is new or changes. An order file goes `keep_days` (7 by default) after its
   last update, by the date inside it. A dry run keeps no cache.
 - Pilot's location, terminal and contract lists only fill in names and addresses, and TMW maps each
   stop by its id. The lists are kept in the cache (`reference-*.json`) and read from Pilot again when an order names an id the kept copy lacks, or once the kept
