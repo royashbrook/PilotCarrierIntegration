@@ -92,9 +92,14 @@ function Receive-PilotOrders {
   $open = [Collections.Generic.List[object]]::new()
   $staged = 0; $skipped = 0
   foreach ($record in $records) {
-    if ((Get-PilotOrderCache $cacheDir $record.dispatchOrderId).state -eq 'staged') { $staged++; continue }
+    $cached = Get-PilotOrderCache $cacheDir $record.dispatchOrderId
+    if ($cached.state -eq 'staged') {
+      # TMW keeps what it was built from; the entry still keeps the latest record Pilot sent
+      if ($cached.pilot_hash -ne (Get-PilotRecordHash $record)) { Set-PilotOrderCache $cacheDir $cached.dispatch_order_id 'staged' $cached.tmw_order $record $cached.references }
+      $staged++; continue
+    }
     $reason = Get-PilotOrderSkipReason $record $include $window
-    if ($reason) { Skip-PilotOrder $cacheDir $record.dispatchOrderId $reason; $skipped++; continue }
+    if ($reason) { Skip-PilotOrder $cacheDir $record.dispatchOrderId $reason $record; $skipped++; continue }
     $open.Add($record)
   }
   Write-Log "Pilot  : $($records.Count) orders read, $staged already staged, $skipped skipped, $($open.Count) to stage"
@@ -105,7 +110,7 @@ function Receive-PilotOrders {
     try {
       ConvertFrom-PilotOrder $record -Cfg $Cfg -References $references
     } catch {
-      Skip-PilotOrder $cacheDir $record.dispatchOrderId $_.Exception.Message
+      Skip-PilotOrder $cacheDir $record.dispatchOrderId $_.Exception.Message $record
     }
   }
 }

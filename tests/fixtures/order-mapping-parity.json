@@ -54,11 +54,11 @@
   "rejections": [
     {
       "name": "identity-first",
-      "reason": "no dispatchOrderId"
+      "reason": "no dispatchOrderId; status 4"
     },
     {
       "name": "status-before-window",
-      "reason": "status 4"
+      "reason": "status 4; invalid scheduled window"
     },
     {
       "name": "missing-window",
@@ -82,24 +82,25 @@
     },
     {
       "name": "quantity-before-required",
-      "reason": "no gallons on item 11888002"
+      "reason": "no gallons on item 11888002; no productCode on item 11888001"
     },
     {
       "name": "item-identity-first",
-      "reason": "no dispatchOrderItemId on item "
+      "reason": "no dispatchOrderItemId on item ; no locationSystemId on item "
     },
     {
       "name": "location-before-product",
-      "reason": "no locationSystemId on item 11888001"
+      "reason": "no locationSystemId on item 11888001; no productCode on item 11888001"
     },
     {
       "name": "product-before-wra",
-      "reason": "no productCode on item 11888001"
+      "reason": "no productCode on item 11888001; no wraProductDescription on item 11888001"
     },
     {
       "name": "missing-wra",
       "reason": "no wraProductDescription on item 11888001"
     }
   ],
-  "order_note": "order hashes regenerated on the one-map branch: the model dropped fields nothing reads (pilotGuid, kiosked, bolNumber, pilotOrderItemIds, contractSystemIds, stopNumber, freightNumber, uom, weight, commodityCode, pilotSourceItemId, supplierDescription, productSystemId) and no longer casts ids to strings; archive, sql and parameters are the d11bbc0 values"
+  "order_note": "order hashes regenerated on the one-map branch: the model dropped fields nothing reads (pilotGuid, kiosked, bolNumber, pilotOrderItemIds, contractSystemIds, stopNumber, freightNumber, uom, weight, commodityCode, pilotSourceItemId, supplierDescription, productSystemId) and no longer casts ids to strings; archive, sql and parameters are the d11bbc0 values",
+  "rejections_note": "rejection reasons regenerated for 0.8.1: every failing check is named, joined with \"; \", in map order; before, only the first"
 }
