@@ -29,16 +29,15 @@ function Get-PilotSqlBindings {
   }
 }
 
-function Assert-PilotJsonPath([string]$Path, [string[]]$Roots) {
-  if ($Path -cnotmatch '^\$\.(order|item|create|location|terminal|contract)(?:\.|\[|$)' -or $Matches[1] -cnotin $Roots) { throw "Unavailable SQL mapping source: $Path" }
-  $null = @([Newtonsoft.Json.Linq.JObject]::new().SelectTokens($Path))
+function Assert-PilotSourcePath([string]$Path, [string[]]$Roots) {
+  if ($Path -cnotmatch '^\$(order|item|create|location|terminal|contract)(?:\.\w+)+$' -or $Matches[1] -cnotin $Roots) { throw "Unavailable native mapping source: $Path" }
 }
 
 function Read-PilotOrderMapping($Cfg) {
   $path = if ($Cfg.order_mapping) { Join-Path $Cfg.directory $Cfg.order_mapping } else { Join-Path $PSScriptRoot 'order-mapping.psd1' }
   $spec = Import-PowerShellDataFile -LiteralPath $path
   if (-not $spec.ContainsKey('SchemaVersion')) { return Read-LegacyPilotOrderMapping $Cfg }
-  if ($spec.SchemaVersion -isnot [int] -or $spec.SchemaVersion -ne 2) { throw 'Unsupported SQL mapping schema version.' }
+  if ($spec.SchemaVersion -isnot [int] -or $spec.SchemaVersion -ne 3) { throw 'SQL mapping requires schema 3 with native PowerShell property paths.' }
   if (@($spec.Keys | Where-Object { $_ -cnotin 'SchemaVersion', 'Validators', 'Order', 'Freight', 'Pickup', 'Delivery' }).Count) { throw 'Unsupported SQL mapping section.' }
   $map = Read-LegacyPilotOrderMapping
   $bindings = Get-PilotSqlBindings
@@ -68,11 +67,11 @@ function Read-PilotOrderMapping($Cfg) {
         if ($null -ne $row.src.value -and $row.src.value -isnot [string] -and $row.src.value -isnot [ValueType]) { throw 'Literal SQL sources must be scalar.' }
       } else {
         if (-not @($row.src).Count) { throw 'Empty SQL mapping source.' }
-        foreach ($source in @($row.src)) { Assert-PilotJsonPath $source $roots }
+        foreach ($source in @($row.src)) { Assert-PilotSourcePath $source $roots }
         if ($row.format) { $null = $row.format -f @($row.src) }
       }
-      if ($field -eq 'Order.pilotOrderId' -and ($row.src -isnot [string] -or $row.src -cne '$.order.dispatchOrderId' -or $row.cast -cne 'string' -or $row.format -or $row.ContainsKey('default'))) { throw 'Operational order identity cannot be remapped.' }
-      if ($field -eq 'Freight.pilotOrderItemId' -and ($row.src -isnot [string] -or $row.src -cne '$.item.dispatchOrderItemId' -or $row.cast -cne 'string' -or $row.format -or $row.ContainsKey('default'))) { throw 'Operational item identity cannot be remapped.' }
+      if ($field -eq 'Order.pilotOrderId' -and ($row.src -isnot [string] -or $row.src -cne '$order.dispatchOrderId' -or $row.cast -cne 'string' -or $row.format -or $row.ContainsKey('default'))) { throw 'Operational order identity cannot be remapped.' }
+      if ($field -eq 'Freight.pilotOrderItemId' -and ($row.src -isnot [string] -or $row.src -cne '$item.dispatchOrderItemId' -or $row.cast -cne 'string' -or $row.format -or $row.ContainsKey('default'))) { throw 'Operational item identity cannot be remapped.' }
       foreach ($property in 'source', 'sources', 'value', 'format', 'cast', 'default', 'blank') { $target.Remove($property) }
       if ($row.src -is [Collections.IDictionary]) { $target.value = $row.src.value }
       elseif ($row.format) { $target.sources = @($row.src); $target.format = $row.format }
@@ -94,7 +93,7 @@ function Read-PilotOrderMapping($Cfg) {
         if ($check -isnot [string]) {
           if (@($check.Keys | Where-Object { $_ -cnotin 'use', 'src', 'message' }).Count) { throw 'Unsupported attached validator property.' }
           if ($check.ContainsKey('message')) { $rule.message = $check.message }
-          if ($check.src) { Assert-PilotJsonPath $check.src $roots; $rule.source = $check.src }
+          if ($check.src) { Assert-PilotSourcePath $check.src $roots; $rule.source = $check.src }
         }
         if ($rule.kind -eq 'window') {
           if ($check -isnot [string] -and $check.Count -ne 1) { throw 'Window checks use their mapped start/end and named rejection messages.' }

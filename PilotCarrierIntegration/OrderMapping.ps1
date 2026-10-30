@@ -58,45 +58,23 @@ function Read-LegacyPilotOrderMapping($Cfg) {
   $map
 }
 
-function ConvertTo-PilotJsonToken($Value) {
-  if ($null -eq $Value) { return ,([Newtonsoft.Json.Linq.JValue]::CreateNull()) }
-  if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
-    $result = [Newtonsoft.Json.Linq.JObject]::new()
-    $names = if ($Value -is [Collections.IDictionary]) { $Value.Keys } else { $Value.PSObject.Properties.Name }
-    foreach ($name in $names) { $result.Add([string]$name, (ConvertTo-PilotJsonToken $Value.$name)) }
-    return ,$result
-  }
-  if ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
-    $result = [Newtonsoft.Json.Linq.JArray]::new()
-    foreach ($item in $Value) { $result.Add((ConvertTo-PilotJsonToken $item)) }
-    return ,$result
-  }
-  # Native dates, offsets and decimals keep their types instead of round-tripping through JSON text.
-  return ,([Newtonsoft.Json.Linq.JValue]::new($Value))
-}
-
 function Get-PilotMappingSource($Context, [string]$Path, [string]$Phase = 'input', [string]$Group = 'Item') {
-  if ($Path.StartsWith('$.')) {
-    $role = if ($Group -eq 'Order') { 'order' } else { 'item' }
-    $phaseKey = "$role/$(if ($Phase -eq 'lookup') { 'lookup' } else { 'input' })"
-    if (-not $Context.ContainsKey('_json')) { $Context['_json'] = @{} }
-    if (-not $Context['_json'].ContainsKey($phaseKey)) {
-      $inputData = @{
-        order = $Context['record']; create = $Context['cfg'].create
+  $native = $Path.StartsWith('$')
+  if ($native) {
+    $value = @{ order = $Context['record']; create = $Context['cfg'].create }
+    if ($Group -ne 'Order') {
+      $value.item = $Context['item']
+      if ($Phase -eq 'lookup') {
+        $value.terminal = $Context['terminal']; $value.location = $Context['location']; $value.contract = $Context['contract']
       }
-      if ($role -eq 'item') { $inputData.item = $Context['item'] }
-      if ($Phase -eq 'lookup' -and $role -eq 'item') {
-        $inputData.terminal = $Context['terminal']; $inputData.location = $Context['location']; $inputData.contract = $Context['contract']
-      }
-      $Context['_json'][$phaseKey] = ConvertTo-PilotJsonToken $inputData
     }
-    $token = $Context['_json'][$phaseKey].SelectToken($Path)
-    if ($null -eq $token -or $token.Type -eq 'Null') { return $null }
-    if ($token -isnot [Newtonsoft.Json.Linq.JValue]) { throw "SQL mapping source must select one scalar: $Path" }
-    return ,$token.Value
+    $Path = $Path.Substring(1)
+  } else { $value = $Context }
+  foreach ($part in $Path.Split('.')) {
+    if ($value -is [Collections.IDictionary]) { $value = $value[$part] }
+    else { $value = $value.$part }
   }
-  $value = $Context
-  foreach ($part in $Path.Split('.')) { $value = $value.$part }
+  if ($native -and $null -ne $value -and $value -isnot [string] -and $value -isnot [ValueType]) { throw "SQL mapping source must select one scalar: $Path" }
   return ,$value
 }
 

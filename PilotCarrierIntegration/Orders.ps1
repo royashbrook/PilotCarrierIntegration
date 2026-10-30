@@ -89,7 +89,6 @@ function ConvertFrom-PilotOrder {
   $used = [ordered]@{ terminals = @{}; locations = @{}; contracts = @{} }
   foreach ($item in $items) {
     $context.item = $item
-    $context.Remove('_json')
     $rawTerminalId = Get-PilotCheckValue $Mapping @{ field = 'Pickup.locationCode' } $context
     $rawContractId = Get-PilotCheckValue $Mapping @{ field = 'Freight.supplierContractId' } $context
     $terminalId = if (-not [string]::IsNullOrWhiteSpace([string]$rawTerminalId)) { $rawTerminalId }
@@ -108,7 +107,6 @@ function ConvertFrom-PilotOrder {
     $context.terminal = $terminal
     $context.location = $location
     $context.contract = $contract
-    $context.Remove('_json')
     foreach ($rule in @($Mapping.PostChecks | Where-Object { $null -ne $_ })) {
       if (-not (Test-PilotMappingValue (Get-PilotCheckValue $Mapping $rule $context) $rule)) { throw ($rule.message -f $item.dispatchOrderItemId) }
     }

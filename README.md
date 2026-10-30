@@ -99,16 +99,16 @@ The data-only [order-mapping.psd1](PilotCarrierIntegration/order-mapping.psd1) u
 `dst`. Copy the complete file beside settings.json and set
 `"order_mapping": "order-mapping.psd1"`. Paths are relative to settings, not the shell.
 
-`src` uses [Json.NET JSONPath](https://www.newtonsoft.com/json/help/html/SelectToken.htm),
-not jq expressions or PowerShell code. `$` is the input envelope:
-`{ order, item, create, terminal, location, contract }`. `order` is one `/order` result;
-`item` is the current active `dispatchOrderItems` element. `create` contains only `settings.create`.
-The remaining objects are the matched reference rows, available in `phase = 'lookup'`.
-Input-phase selectors receive no reference roots, including inside nested JSONPath filters.
-Their values cannot depend on an earlier item's lookup data.
-Order rows receive only `order` and `create`, never a current item.
-Credentials and connection settings are not in this envelope. Each selector must return one
-scalar or null. Property access, array indexes and quoted property names use Json.NET's syntax.
+`src` is a single-quoted native property path, such as `'$item.gallons'`. The mapper walks the
+already-read PowerShell objects directly. It does not evaluate the string as PowerShell code,
+serialize/reparse the object, or use a third-party query library.
+
+`$order` is one `/order` result; `$item` is its current active `dispatchOrderItems` element.
+`$create` contains only `settings.create`. `$terminal`, `$location` and `$contract` are the
+matched reference rows, available in `phase = 'lookup'`. Order rows see only `$order` and
+`$create`. Credentials and connection settings are not sources. Paths contain a named root
+and dotted properties, selecting one scalar or null. Methods, expressions, indexers, wildcards
+and query filters are not supported.
 
 `dst` names real `proc.param` inputs or directly updated `table.field` columns, without `@`.
 Arrays name the existing writer's fan-out. `Order`, `Freight`, `Pickup` and `Delivery` select
@@ -119,13 +119,13 @@ Change a source by editing `src`. This quantity feeds the first-freight and addi
 procedure inputs; its attached check follows the new source:
 
 ```powershell
-@{ src = '$.item.gallons'
+@{ src = '$item.gallons'
    dst = @('dx_add_neworder_stop.volume', 'dx_add_neworder_freight_to_stop.volume')
    checks = @(@{ use = 'gallons'; message = 'no gallons on item {0}' }) }
 ```
 
 A fixed source uses `src = @{ value = ... }`. For example, replace the bill-to row's
-`src = '$.create.billto'` with `src = @{ value = 'TESTBILL' }`, retaining its `dst` and `cast`.
+`src = '$create.billto'` with `src = @{ value = 'TESTBILL' }`, retaining its `dst` and `cast`.
 This changes the actual order procedure arguments and the derived archive bill-to, not just a label.
 
 Define a reusable validator under `Validators`, then attach its name to each row needing it.
@@ -138,7 +138,7 @@ zip = @{ kind = 'regex'; pattern = '^\d{5}(-\d{4})?$'; message = 'invalid ZIP on
 Then change the Delivery ZIP row to:
 
 ```powershell
-@{ src = '$.location.postalCode'; dst = 'stops.stp_zipcode'
+@{ src = '$location.postalCode'; dst = 'stops.stp_zipcode'
    phase = 'lookup'; checks = @('zip') }
 ```
 
@@ -153,7 +153,7 @@ one-second timeout. Positive decimal and scheduled start/end checks remain typed
 Existing identity/status/window/quantity/item rejection precedence is retained; lookup checks run
 after those checks and reference enrichment. One bad active item holds the entire order.
 `src` arrays without `format` select the first truthy value, preserving empty-string fallbacks.
-With `format`, all sources feed the existing .NET composite format. `default`, `blank`, and
+With `format`, all sources feed PowerShell's `-f` format. `default`, `blank`, and
 `cast` (`string`, `nullable_string`, `datetime`) retain their prior meanings.
 
 Reference-cache miss detection and enrichment use the same mapped join IDs. Identity rows remain
@@ -162,9 +162,13 @@ resolution (`stops.stp_city` takes the name through the existing SQL city lookup
 stop grouping, transaction scope, retries, `EXISTS` and cache expiry remain writer behavior.
 Archive records also derive from these business values; the mapping is not an editable ledger of
 every repeated archive slot. Generated IDs, raw payload metadata and writer constants such as GAL
-are not misleading editable SQL destinations. The old mapping format remains accepted for callers
-pinned to that file shape. Default canonical orders, archives, SQL and parameters retain the saved
-0.7.10 parity hashes.
+are not misleading editable SQL destinations. Default canonical orders, archives, SQL and parameters
+retain the saved 0.7.10 parity hashes.
+
+The native file uses `SchemaVersion = 3`. To migrate a 0.7.12 file, change its version to 3 and
+replace `$.item.field` with `$item.field` (and likewise for the other roots). The retired query
+syntax is refused before provider reads, not emulated. The earlier pre-schema native mapping
+format is still accepted. SQL destinations and validator definitions do not change in this correction.
 
 ### Intake
 
