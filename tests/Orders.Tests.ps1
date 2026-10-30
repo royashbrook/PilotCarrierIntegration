@@ -416,7 +416,7 @@ Describe 'exact configured polling window' {
     $cachedCfg = $futureCfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $cachedCfg | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'future-staged') -Force
     $dir = Get-PilotOrderCacheDir $cachedCfg
-    Set-PilotOrderCache $dir $rawOrder.dispatchOrderId 'staged' 'synthetic-tmw-id'
+    Set-PilotOrderCache $dir $rawOrder.dispatchOrderId 'staged' 'synthetic-tmw-id' $rawOrder
     $path = Join-Path $dir "$($rawOrder.dispatchOrderId).json"
     $before = (Get-FileHash $path).Hash
     Mock Get-Date { $fixedNow }
