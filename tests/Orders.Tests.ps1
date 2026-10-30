@@ -777,3 +777,11 @@ Describe 'the Pilot read window' {
     }
   }
 }
+
+Describe 'worker import' {
+  It 'points the TMW workers at the module manifest, not the Orders folder' {
+    $path = & (Get-Module PilotCarrierIntegration) { $script:ModuleManifest }
+    $path | Should -Be (Join-Path (Get-Module PilotCarrierIntegration).ModuleBase 'PilotCarrierIntegration.psd1')
+    Test-Path -LiteralPath $path | Should -BeTrue
+  }
+}
