@@ -90,10 +90,16 @@ plans and names what would go, and sends nothing.
 
 ## Orders
 
-0.7.14 restores the fixed order translation from 0.7.10. The configurable mapping interface
-introduced in 0.7.11-0.7.13 is removed: no mapping file, model, bindings registry or legacy loader.
-Source mapping changes require a module change and its tests. This is the fallback in #40,
-not delivery of a smaller configurable mapper. Polling and default business behavior are unchanged.
+0.8.0 translates each order through one field map, `Orders/Map.ps1`. Every value in a staged order
+comes from one row: `src` is a path into what Pilot sent (order, item, terminal, location, contract)
+or the settings, `dst` is the property on the order, pickup, delivery or freight object the writer
+stages. A row with a `check` runs it before anything else is read, in list order, and the first
+failure is the skip reason, so the top of the map is the required-fields table. A check is a named
+regex or script block (`required`, `positive`). The order object carries only what the writer and
+the cache read, and values stay as Pilot sent them. The order code is one folder, split by what
+changes together: `Map`, `Translate`, `Cache`, `Read`, `Write` and `Run`, whose header is the flow.
+The TMW archive, SQL and parameters are byte for byte the 0.7.10 output on the parity fixtures
+(`tests/MappingParity.ps1`).
 
 Pilot carrier orders -> translate -> stage each one in TMW DataExchange at EDI state 10, for people
 to accept or reject in TMW.
