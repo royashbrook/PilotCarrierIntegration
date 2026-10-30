@@ -1,4 +1,4 @@
-# From one Pilot order record to the order object Tmw.ps1 stages: the map applied row by row, the skip
+# From one Pilot order record to the order object Write.ps1 stages: the map applied row by row, the skip
 # reason when a required value is blank, one stop per place with its freight lines.
 
 # a partial address from Pilot still stages: each missing part is marked so dispatch sees what to finish

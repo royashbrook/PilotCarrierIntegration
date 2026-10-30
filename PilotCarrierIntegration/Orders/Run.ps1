@@ -3,7 +3,7 @@
 #   src  Read-PilotCarrierOrders  read the poll window from Pilot, skip what is not ready or already
 #                                 staged, translate the rest (Read.ps1, Map.ps1, Translate.ps1)
 #   fmt  Save-PilotOrderPlan      keep the translated orders, types intact, for the destination
-#   dst  Send-PilotOrderPlan      stage each order in TMW DataExchange at EDI state 10 (Tmw.ps1), keep
+#   dst  Send-PilotOrderPlan      stage each order in TMW DataExchange at EDI state 10 (Write.ps1), keep
 #                                 each result in the order cache (Read.ps1); dry_run validates and rolls back
 
 # the TMW writer reads settings through PSObject.Properties, so the order path works on the JSON object shape
