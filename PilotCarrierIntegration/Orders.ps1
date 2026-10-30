@@ -58,51 +58,53 @@ function Complete-PilotAddress {
   $Address
 }
 
-# The field map. Every value in a staged order comes from one row. `to` is the field the writer reads
-# (order, pickup, delivery or freight); `from` is a path into what Pilot sent (order, item, terminal,
-# location, contract) or the settings (cfg). Several `from` paths take the first that is not blank,
-# `format` joins them instead, `value` is a fixed value, and `default` fills a blank. A row with a
-# `check` runs it on each `from` before anything else is read, in list order, and the first failure is
-# the skip reason: the checked rows lead, so the top of the list is the required-fields table. A check
-# is a regex the value must match or a script block. Blank is null, empty or whitespace. Values stay as
-# Pilot sent them; the writer casts what it sends. The TMW column each field lands in is the README table.
+# The field map, one row per field of the order we build. Pilot's JSON is already an object here, so
+# `src` is a path into the objects in hand: what Pilot sent (order, item, terminal, location, contract)
+# and the settings (cfg). `dst` is the property it becomes on the order, pickup, delivery or freight
+# object. The writer turns that object into the TMW calls; one property can land in several columns
+# (gallons in two procedures and an archive row), so the TMW side stays in the writer and the README
+# table. Several `src` paths take the first that is not blank, `format` joins them, `value` is a fixed
+# value, and `default` fills a blank. A row with a `check` runs it on each `src` before anything else is
+# read, in list order, and the first failure is the skip reason: the checked rows lead, so the top of
+# the list is the required-fields table. A check is a regex the value must match or a script block.
+# Blank is null, empty or whitespace. Values stay as Pilot sent them.
 $script:PilotOrderChecks = @{
   required = '\S'
   positive = { param($v) $d = 0d; [decimal]::TryParse([string]$v, [Globalization.NumberStyles]::Float -bor [Globalization.NumberStyles]::AllowThousands, [Globalization.CultureInfo]::InvariantCulture, [ref]$d) -and $d -gt 0 }
 }
 $script:PilotOrderMap = @(
-  @{ to = 'order.pilotOrderId';         from = 'order.dispatchOrderId';      check = 'required' }
-  @{ to = 'freight.quantity';           from = 'item.gallons';               check = 'positive' }
-  @{ to = 'freight.pilotOrderItemId';   from = 'item.dispatchOrderItemId';   check = 'required' }
-  @{ to = 'delivery.locationCode';      from = 'item.locationSystemId';      check = 'required' }
+  @{ src = 'order.dispatchOrderId';          dst = 'order.pilotOrderId';         check = 'required' }
+  @{ src = 'item.gallons';                   dst = 'freight.quantity';           check = 'positive' }
+  @{ src = 'item.dispatchOrderItemId';       dst = 'freight.pilotOrderItemId';   check = 'required' }
+  @{ src = 'item.locationSystemId';          dst = 'delivery.locationCode';      check = 'required' }
   # what to lift (the code carries the octane) and the WRA product (which tank): "Diesel" alone covers DSL and DSL-AS
-  @{ to = 'freight.commodityName';      from = 'item.productCode', 'item.wraProductDescription'; format = '{0} / {1}'; check = 'required' }
+  @{ src = 'item.productCode', 'item.wraProductDescription'; format = '{0} / {1}'; dst = 'freight.commodityName'; check = 'required' }
   # the order; the stops take their window from these two
-  @{ to = 'order.pilotSourceOrderId';   from = 'order.sourceSystemOrderId' }
-  @{ to = 'order.deliveryWindowStart';  from = 'order.scheduledStartDateTime'; cast = 'datetime' }
-  @{ to = 'order.deliveryWindowEnd';    from = 'order.scheduledEndDateTime';   cast = 'datetime' }
-  @{ to = 'order.billto';               from = 'cfg.create.billto' }
+  @{ src = 'order.sourceSystemOrderId';      dst = 'order.pilotSourceOrderId' }
+  @{ src = 'order.scheduledStartDateTime';   dst = 'order.deliveryWindowStart';  cast = 'datetime' }
+  @{ src = 'order.scheduledEndDateTime';     dst = 'order.deliveryWindowEnd';    cast = 'datetime' }
+  @{ src = 'cfg.create.billto';              dst = 'order.billto' }
   # the pickup: the terminal, which Pilot may pick late, so a blank one stages UNKNOWN
-  @{ to = 'pickup.type';                value = 'PU' }
-  @{ to = 'pickup.locationCode';        from = 'item.lineOfOperationsSystemId'; default = 'UNKNOWN' }
-  @{ to = 'pickup.name';                from = 'terminal.name';              default = 'NO TERMINAL' }
-  @{ to = 'pickup.address1';            from = 'terminal.address' }
-  @{ to = 'pickup.address2';            from = 'terminal.address2' }
-  @{ to = 'pickup.city';                from = 'terminal.city' }
-  @{ to = 'pickup.state';               from = 'terminal.stateSystemCode', 'terminal.state' }
-  @{ to = 'pickup.zip';                 from = 'terminal.postalCode' }
+  @{ value = 'PU';                           dst = 'pickup.type' }
+  @{ src = 'item.lineOfOperationsSystemId';  dst = 'pickup.locationCode';        default = 'UNKNOWN' }
+  @{ src = 'terminal.name';                  dst = 'pickup.name';                default = 'NO TERMINAL' }
+  @{ src = 'terminal.address';               dst = 'pickup.address1' }
+  @{ src = 'terminal.address2';              dst = 'pickup.address2' }
+  @{ src = 'terminal.city';                  dst = 'pickup.city' }
+  @{ src = 'terminal.stateSystemCode', 'terminal.state'; dst = 'pickup.state' }
+  @{ src = 'terminal.postalCode';            dst = 'pickup.zip' }
   # the delivery: the store
-  @{ to = 'delivery.type';              value = 'DR' }
-  @{ to = 'delivery.name';              from = 'location.description';       default = 'NO LOCATION' }
-  @{ to = 'delivery.address1';          from = 'location.address1' }
-  @{ to = 'delivery.address2';          from = 'location.address2' }
-  @{ to = 'delivery.city';              from = 'location.city' }
-  @{ to = 'delivery.state';             from = 'location.stateCode' }
-  @{ to = 'delivery.zip';               from = 'location.postalCode' }
+  @{ value = 'DR';                           dst = 'delivery.type' }
+  @{ src = 'location.description';           dst = 'delivery.name';              default = 'NO LOCATION' }
+  @{ src = 'location.address1';              dst = 'delivery.address1' }
+  @{ src = 'location.address2';              dst = 'delivery.address2' }
+  @{ src = 'location.city';                  dst = 'delivery.city' }
+  @{ src = 'location.stateCode';             dst = 'delivery.state' }
+  @{ src = 'location.postalCode';            dst = 'delivery.zip' }
   # the freight, one line per item; the supplier is the supply contract, which Pilot may also pick late
-  @{ to = 'freight.productCode';        from = 'item.productCode' }
-  @{ to = 'freight.supplierContractId'; from = 'item.looSystemId';           default = 'UNKNOWN' }
-  @{ to = 'freight.supplierName';       from = 'contract.contractName';      default = 'NO SUPPLIER' }
+  @{ src = 'item.productCode';               dst = 'freight.productCode' }
+  @{ src = 'item.looSystemId';               dst = 'freight.supplierContractId'; default = 'UNKNOWN' }
+  @{ src = 'contract.contractName';          dst = 'freight.supplierName';       default = 'NO SUPPLIER' }
 )
 
 function Resolve-PilotPath($Context, [string]$Path) {
@@ -119,7 +121,7 @@ function Test-PilotCheck([string]$Name, $Value) {
 # the first check in map order that fails, as the skip reason, naming every item that failed it
 function Get-PilotMapReason($Rows, [object[]]$Contexts) {
   foreach ($row in $Rows) {
-    foreach ($path in @($row.from)) {
+    foreach ($path in @($row.src)) {
       $bad = @($Contexts | Where-Object { -not (Test-PilotCheck $row.check (Resolve-PilotPath $_ $path)) })
       if ($bad.Count) {
         $items = @($bad | ForEach-Object { $_.item.dispatchOrderItemId })
@@ -132,15 +134,15 @@ function Get-PilotMapReason($Rows, [object[]]$Contexts) {
 # one model object from a scope's rows, as the writer reads it
 function New-PilotMapObject([string]$Scope, $Context) {
   $object = [ordered]@{}
-  foreach ($row in @($script:PilotOrderMap | Where-Object to -like "$Scope.*")) {
-    $values = @(foreach ($path in @($row.from)) { Resolve-PilotPath $Context $path })
+  foreach ($row in @($script:PilotOrderMap | Where-Object dst -like "$Scope.*")) {
+    $values = @(foreach ($path in @($row.src)) { Resolve-PilotPath $Context $path })
     $value = $null
     if ($row.ContainsKey('value')) { $value = $row.value }
     elseif ($row.format) { $value = $row.format -f $values }
     else { foreach ($candidate in $values) { if ("$candidate" -match '\S') { $value = $candidate; break } } }
     if ("$value" -notmatch '\S' -and $row.ContainsKey('default')) { $value = $row.default }
     if ($row.cast) { $value = $value -as ($row.cast -as [type]) }
-    $object[$row.to.Split('.')[1]] = $value
+    $object[$row.dst.Split('.')[1]] = $value
   }
   [pscustomobject]$object
 }
@@ -193,7 +195,7 @@ function ConvertFrom-PilotOrder {
 function Get-PilotOrderSkipReason {
   param([Parameter(Mandatory)]$Record, [int[]]$Include = @(2), $Window)
   $rows = @($script:PilotOrderMap | Where-Object check)
-  $reason = Get-PilotMapReason @($rows | Where-Object to -like 'order.*') @(@{ order = $Record })
+  $reason = Get-PilotMapReason @($rows | Where-Object dst -like 'order.*') @(@{ order = $Record })
   if ($reason) { return $reason }
   $status = 0
   if (-not [int]::TryParse([string]$Record.dispatchOrderStatusTypeId, [ref]$status) -or $status -ne 2 -or $status -notin $Include) { return "status $($Record.dispatchOrderStatusTypeId) $($Record.dispatchOrderStatusTypeName)".Trim() }
@@ -213,7 +215,7 @@ function Get-PilotOrderSkipReason {
   }
   $items = @($Record.dispatchOrderItems | Where-Object { -not $_.isDeleted })
   if (-not $items.Count) { return 'no active items' }
-  Get-PilotMapReason @($rows | Where-Object to -notlike 'order.*') @($items | ForEach-Object { @{ order = $Record; item = $_ } })
+  Get-PilotMapReason @($rows | Where-Object dst -notlike 'order.*') @($items | ForEach-Object { @{ order = $Record; item = $_ } })
 }
 
 function Get-PilotKeepDays($Cfg) { if ($Cfg.keep_days) { [int]$Cfg.keep_days } else { 7 } }
