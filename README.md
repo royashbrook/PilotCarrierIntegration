@@ -90,87 +90,13 @@ plans and names what would go, and sends nothing.
 
 ## Orders
 
+0.7.14 restores the fixed order translation from 0.7.10. The configurable mapping interface
+introduced in 0.7.11-0.7.13 is removed: no mapping file, model, bindings registry or legacy loader.
+Source mapping changes require a module change and its tests. This is the fallback in #40,
+not delivery of a smaller configurable mapper. Polling and default business behavior are unchanged.
+
 Pilot carrier orders -> translate -> stage each one in TMW DataExchange at EDI state 10, for people
 to accept or reject in TMW.
-
-### Mapping and checks
-
-The data-only [order-mapping.psd1](PilotCarrierIntegration/order-mapping.psd1) uses `src` then
-`dst`. Copy the complete file beside settings.json and set
-`"order_mapping": "order-mapping.psd1"`. Paths are relative to settings, not the shell.
-
-`src` is a single-quoted native property path, such as `'$item.gallons'`. The mapper walks the
-already-read PowerShell objects directly. It does not evaluate the string as PowerShell code,
-serialize/reparse the object, or use a third-party query library.
-
-`$order` is one `/order` result; `$item` is its current active `dispatchOrderItems` element.
-`$create` contains only `settings.create`. `$terminal`, `$location` and `$contract` are the
-matched reference rows, available in `phase = 'lookup'`. Order rows see only `$order` and
-`$create`. Credentials and connection settings are not sources. Paths contain a named root
-and dotted properties, selecting one scalar or null. Methods, expressions, indexers, wildcards
-and query filters are not supported.
-
-`dst` names real `proc.param` inputs or directly updated `table.field` columns, without `@`.
-Arrays name the existing writer's fan-out. `Order`, `Freight`, `Pickup` and `Delivery` select
-the order, freight line or stop role. `ref` distinguishes SQL calls/archive rows sharing a
-destination, such as SID, SUN, SO and L06. These are supported bindings, not arbitrary SQL.
-
-Change a source by editing `src`. This quantity feeds the first-freight and additional-freight
-procedure inputs; its attached check follows the new source:
-
-```powershell
-@{ src = '$item.gallons'
-   dst = @('dx_add_neworder_stop.volume', 'dx_add_neworder_freight_to_stop.volume')
-   checks = @(@{ use = 'gallons'; message = 'no gallons on item {0}' }) }
-```
-
-A fixed source uses `src = @{ value = ... }`. For example, replace the bill-to row's
-`src = '$create.billto'` with `src = @{ value = 'TESTBILL' }`, retaining its `dst` and `cast`.
-This changes the actual order procedure arguments and the derived archive bill-to, not just a label.
-
-Define a reusable validator under `Validators`, then attach its name to each row needing it.
-For an **optional, behavior-changing** ZIP rule, add:
-
-```powershell
-zip = @{ kind = 'regex'; pattern = '^\d{5}(-\d{4})?$'; message = 'invalid ZIP on item {0}' }
-```
-
-Then change the Delivery ZIP row to:
-
-```powershell
-@{ src = '$location.postalCode'; dst = 'stops.stp_zipcode'
-   phase = 'lookup'; checks = @('zip') }
-```
-
-This checks the looked-up postal code before address placeholders or SQL. `{0}` is the item ID.
-It is **not enabled by default**: missing references and partial addresses still stage for
-dispatch to complete. Reuse `zip` on the Pickup row to check terminal postal codes too.
-An attached check can override `message` or select a component with its own `src`; the bundled
-commodity row uses that to require the WRA description before combining it with product code.
-
-Checks inspect the selected source before fallbacks/casts. Regex uses invariant matching and a
-one-second timeout. Positive decimal and scheduled start/end checks remain typed, not regex.
-Existing identity/status/window/quantity/item rejection precedence is retained; lookup checks run
-after those checks and reference enrichment. One bad active item holds the entire order.
-`src` arrays without `format` select the first truthy value, preserving empty-string fallbacks.
-With `format`, all sources feed PowerShell's `-f` format. `default`, `blank`, and
-`cast` (`string`, `nullable_string`, `datetime`) retain their prior meanings.
-
-Reference-cache miss detection and enrichment use the same mapped join IDs. Identity rows remain
-fixed because cache keys, replay and outbound routing use them. SQL type/width checks, city-code
-resolution (`stops.stp_city` takes the name through the existing SQL city lookup), address completion,
-stop grouping, transaction scope, retries, `EXISTS` and cache expiry remain writer behavior.
-Archive records also derive from these business values; the mapping is not an editable ledger of
-every repeated archive slot. Generated IDs, raw payload metadata and writer constants such as GAL
-are not misleading editable SQL destinations. Default canonical orders, archives, SQL and parameters
-retain the saved 0.7.10 parity hashes.
-
-The native file uses `SchemaVersion = 3`. To migrate a 0.7.12 file, change its version to 3 and
-replace `$.item.field` with `$item.field` (and likewise for the other roots). The retired query
-syntax is refused before provider reads, not emulated. The earlier pre-schema native mapping
-format is still accepted. SQL destinations and validator definitions do not change in this correction.
-
-### Intake
 
 - Orders are read over a rolling window starting `poll.lookback_days` before today (0 by default) and
   running `poll.window_days` (30 by default, at least 2; Pilot reads at most 30). Pilot's read
