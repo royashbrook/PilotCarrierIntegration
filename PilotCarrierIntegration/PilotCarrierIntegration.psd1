@@ -1,12 +1,12 @@
 @{
   RootModule = 'PilotCarrierIntegration.psm1'
-  ModuleVersion = '0.8.1'
+  ModuleVersion = '0.8.2'
   GUID = '393f77b8-b11b-4369-ad42-227e1ac0e79f'
   Author = 'Roy Ashbrook'
   CompanyName = 'ashbrook.io'
   Copyright = '(c) 2026 royashbrook. All rights reserved.'
   Description = 'Pilot carrier feeds as DataAgent runs, on PilotCarrierClient: BOL completions from TMW to Pilot, Pilot orders staged in TMW DataExchange, and scanned BOLs uploaded to their Pilot order items.'
-  PowerShellVersion = '7.4'
+  PowerShellVersion = '7.5'
   RequiredModules = @(
     @{ ModuleName = 'DataAgent'; RequiredVersion = '0.7.4' }
     @{ ModuleName = 'DocumentAgent'; RequiredVersion = '0.5.1' }

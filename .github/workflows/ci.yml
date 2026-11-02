@@ -14,12 +14,22 @@ jobs:
         with:
           persist-credentials: false
       - shell: pwsh
+        run: ./.github/test.ps1
+  minimum:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Test PowerShell 7.5.0
+        shell: pwsh
         run: |
-          $PSVersionTable | Format-Table
-          Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
-          # the manifest is the one list of pins: install exactly what it requires
-          foreach ($r in (Import-PowerShellDataFile ./PilotCarrierIntegration/PilotCarrierIntegration.psd1).RequiredModules) { Install-Module $r.ModuleName -RequiredVersion $r.RequiredVersion -Scope CurrentUser -Force -AcceptLicense }
-          Install-Module Add-PrefixForLogging, SqlServer -Scope CurrentUser -Force -AcceptLicense
-          Install-Module Clear-Files -RequiredVersion 1.1.0.0 -Scope CurrentUser -Force -AcceptLicense
-          Test-ModuleManifest ./PilotCarrierIntegration/PilotCarrierIntegration.psd1 | Out-Null
-          Invoke-Pester ./tests -CI
+          $minimum = Join-Path $env:RUNNER_TEMP 'pwsh-7.5.0'
+          $archive = "$minimum.tar.gz"
+          Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.5.0/powershell-7.5.0-linux-x64.tar.gz -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '7ebb0048a38009de5a59d620a10f33d7ba4920ace2379b104a67fafb79e2841b') { throw 'PowerShell archive checksum mismatch' }
+          $null = New-Item -ItemType Directory $minimum
+          tar -xzf $archive -C $minimum
+          & "$minimum/pwsh" -NoProfile -NonInteractive -File ./.github/test.ps1 -ExpectedVersion 7.5.0
+          exit $LASTEXITCODE
