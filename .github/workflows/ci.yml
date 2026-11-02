@@ -25,11 +25,14 @@ jobs:
       - name: Test PowerShell 7.5.0
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           $minimum = Join-Path $env:RUNNER_TEMP 'pwsh-7.5.0'
           $archive = "$minimum.tar.gz"
           Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.5.0/powershell-7.5.0-linux-x64.tar.gz -OutFile $archive
           if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '7ebb0048a38009de5a59d620a10f33d7ba4920ace2379b104a67fafb79e2841b') { throw 'PowerShell archive checksum mismatch' }
           $null = New-Item -ItemType Directory $minimum
           tar -xzf $archive -C $minimum
+          chmod u+x "$minimum/pwsh"
           & "$minimum/pwsh" -NoProfile -NonInteractive -File ./.github/test.ps1 -ExpectedVersion 7.5.0
-          exit $LASTEXITCODE
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $null = Get-Item ./TestResults.xml
