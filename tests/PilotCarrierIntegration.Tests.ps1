@@ -36,6 +36,21 @@ Describe 'Pilot BOL completion plan' {
     $plan.deferred[0].reason | Should -Be 'freight 1031068: missing Pilot item id (OID), net gallons'
   }
 
+  It 'reads a TMW null as missing, not as a value that cannot be cast' {
+    $table = [Data.DataTable]::new()
+    foreach ($name in $tmwRows[0].PSObject.Properties.Name) { $null = $table.Columns.Add($name) }
+    foreach ($row in $tmwRows) { $null = $table.Rows.Add(@($row.PSObject.Properties.Value)) }
+    $table.Rows[0].grossGallons = [DBNull]::Value
+    $table.Rows[0].dropDateTime = [DBNull]::Value
+    $rows = @(& (Get-Module PilotCarrierIntegration) { param($t) ConvertFrom-PilotTmwRows $t } $table.Rows)
+    $rows[0].grossGallons | Should -BeNullOrEmpty
+    $rows[0].dropDateTime | Should -BeNullOrEmpty
+    $rows[1].grossGallons | Should -Be 4500
+    $plan = Plan $rows
+    @($plan.ready.dispatchOrderId) | Should -Be @(12024244)
+    $plan.deferred[0].reason | Should -Be 'freight 1031068: missing gross gallons, drop time'
+  }
+
   It 'holds an order when two lines carry the same Pilot item id' {
     $tmwRows[1].pilotOrderItemId = $tmwRows[0].pilotOrderItemId
     $plan = Plan $tmwRows
