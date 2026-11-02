@@ -4,6 +4,10 @@ Pilot carrier feeds as [DataAgent](https://github.com/royashbrook/DataAgent) run
 [PilotCarrierClient](https://github.com/royashbrook/PilotCarrierClient). DataAgent runs each feed in
 its settings file's folder, so the log, cleanup and idle marker match any other DataAgent job.
 
+Requires PowerShell 7.5 or later. BOL cache reads preserve timestamp strings with
+`ConvertFrom-Json -DateKind String`, introduced in 7.5. Version 0.8.2 corrects the
+previously declared 7.4 minimum; cache files and feed behavior are unchanged.
+
 ```powershell
 Import-Module PilotCarrierIntegration   # brings DataAgent and PilotCarrierClient with it
 Invoke-PilotCarrierBols "$PSScriptRoot/settings.json"     # or Invoke-PilotCarrierOrders, Invoke-PilotCarrierDocuments
