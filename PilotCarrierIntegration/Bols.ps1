@@ -131,11 +131,21 @@ function Set-PilotBolCursor([string]$Folder, $Since) {
 # DataAgent source: TMW completed freight from the feed's query, plus the orders still pending from earlier runs, read again
 # from their cache files so they go again whatever the query returns. a done file is kept keep_days (2 by default, like
 # gravitate's finished orders) after its send; a pending one keep_days after it was first staged, then dropped, and says so
+# a TMW null arrives as DBNull, which casts to nothing and reads as true; the rows become plain objects with real nulls so they can be checked and cached
+function ConvertFrom-PilotTmwRows($Rows) {
+  if (-not $Rows.Count -or $Rows[0] -isnot [Data.DataRow]) { return $Rows }
+  $columns = @($Rows[0].Table.Columns.ColumnName)
+  foreach ($row in $Rows) {
+    $object = [ordered]@{}
+    foreach ($column in $columns) { $object[$column] = if ($row[$column] -is [DBNull]) { $null } else { $row[$column] } }
+    [pscustomobject]$object
+  }
+}
+
 function Read-PilotBolRows {
   param([hashtable]$Options)
   # the query runs through DataAgent's own sql source, then the rows become plain objects so they can be cached
-  $rows = @(& (Join-Path $script:DataAgent.ModuleBase 'src/sql.ps1') -Data @() -Options $Options.Tmw)
-  if ($rows.Count -and $rows[0] -is [Data.DataRow]) { $rows = @($rows | Select-Object $rows[0].Table.Columns.ColumnName) }
+  $rows = @(ConvertFrom-PilotTmwRows @(& (Join-Path $script:DataAgent.ModuleBase 'src/sql.ps1') -Data @() -Options $Options.Tmw))
   $cutoff = if ($Options.KeepDays -gt 0) { [datetime]::UtcNow.AddDays(-$Options.KeepDays) }
   $read = @($rows | ForEach-Object { [long]$_.tmwOrderId })
   foreach ($file in @(Get-PilotBolCacheFiles $Options.Cache)) {
