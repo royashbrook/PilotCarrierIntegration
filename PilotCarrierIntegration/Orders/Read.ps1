@@ -87,18 +87,20 @@ function Receive-PilotOrders {
 
   $records = @(Get-PilotOrder -Session $Session -StartDate $window.queryStart -EndDate $window.queryEnd)
   # Pilot's read has no status filter (probed 2026-09-29), so every check that needs only the order
-  # itself runs here, before anything else is read
+  # itself runs here, on every order read, before anything else is read
   $include = Get-PilotIncludeStatuses $Cfg
   $open = [Collections.Generic.List[object]]::new()
   $staged = 0; $skipped = 0
   foreach ($record in $records) {
     $cached = Get-PilotOrderCache $cacheDir $record.dispatchOrderId
     if ($cached.state -eq 'staged') {
-      # TMW keeps what it was built from; the entry still keeps the latest record Pilot sent
-      if ($cached.pilot_hash -ne (Get-PilotRecordHash $record)) { Set-PilotOrderCache $cacheDir $cached.dispatch_order_id 'staged' $cached.tmw_order $record $cached.references }
+      # TMW keeps what it was built from, so a check the record fails now does not unstage it: the entry
+      # keeps the latest record Pilot sent and says once, when new or changed, why it would not stage today.
+      # the poll window is about what to stage this run, not about an order TMW already has, so it is not asked
+      Update-PilotStagedOrder $cacheDir $cached $record ([string](Get-PilotOrderSkipReason $record $include))
       $staged++; continue
     }
-    $reason = Get-PilotOrderSkipReason $record $include $window
+    $reason = [string](Get-PilotOrderSkipReason $record $include $window)
     if ($reason) { Skip-PilotOrder $cacheDir $record.dispatchOrderId $reason $record; $skipped++; continue }
     $open.Add($record)
   }

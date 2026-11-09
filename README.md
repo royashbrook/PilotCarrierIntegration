@@ -110,7 +110,7 @@ to accept or reject in TMW.
 
 - Orders are read over a rolling window starting `poll.lookback_days` before today (0 by default) and
   running `poll.window_days` (30 by default, at least 2; Pilot reads at most 30). Pilot's read
-  has no status filter, so one filter runs right after it. Only Scheduled (`2`) orders can stage;
+  has no status filter, so one filter runs on every order it returns. Only Scheduled (`2`) orders can stage;
   `poll.include_statuses` can restrict that, not admit other statuses. Every required field below
   must be filled on every active item. An order that fails stays in Pilot and is read again next run.
 - Set `poll.start_from` to `now` for an exact scheduled-start window, for example
@@ -138,9 +138,11 @@ to accept or reject in TMW.
   order (`pilot`, with its hash), rewritten only when the reason or the record changes, so what
   Pilot sent can be shown later. An order created in TMW also keeps the location, terminal and
   contract rows it was built from; an order TMW already had keeps the record alone, since TMW was
-  not built from this read. A staged order is passed over before anything else (its record still
-  refreshed when Pilot's changes, its TMW order and reference rows kept), and a skip reason is
-  logged only when it is new or changes. An order file goes `keep_days` (7 by default) after its
+  not built from this read. A staged order is passed over before anything else: its TMW order and
+  reference rows are kept, its record is refreshed when Pilot's changes, and when that record would
+  not stage today (its status moved on, an item changed) the reason is kept on the entry as `note`
+  and logged once, `Staged :`, when new or changed. A skip never replaces a staged entry. A skip
+  reason is logged only when it is new or changes. An order file goes `keep_days` (7 by default) after its
   last update, by the date inside it. A dry run keeps no cache.
 - Pilot's location, terminal and contract lists only fill in names and addresses, and TMW maps each
   stop by its id. The lists are kept in the cache (`reference-*.json`) and read from Pilot again when an order names an id the kept copy lacks, or once the kept
