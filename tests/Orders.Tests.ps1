@@ -532,6 +532,37 @@ Describe 'poll window and filtering' {
       $kept.references.terminals.'14673'.name | Should -Be 'EXAMPLE TERMINAL'
       Should -Invoke Get-PilotReferenceData -ModuleName PilotCarrierIntegration -Times 0
   }
+  It 'keeps a staged order staged when its record would not stage today, and says why once' {
+      $cached = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $cached | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'staged-note') -Force
+      $dir = Join-Path $TestDrive 'staged-note/cache'
+      Set-PilotOrderCache $dir 10877997 'staged' '10686484' $rawOrder $canonical.references
+      $kiosked = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $kiosked.dispatchOrderStatusTypeId = 4
+      $kiosked | Add-Member -NotePropertyName dispatchOrderStatusTypeName -NotePropertyValue 'Kiosked' -Force
+      Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($kiosked) }
+      Mock Get-PilotReferenceData -ModuleName PilotCarrierIntegration { throw 'staged must not read references' }
+      Mock Write-Log -ModuleName PilotCarrierIntegration
+      @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
+      $noted = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
+      @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
+      Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -Times 1 -Exactly -ParameterFilter { $Message -eq 'Staged : 10877997, TMW order 10686484, now status 4 Kiosked' }
+      Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -Times 2 -Exactly -ParameterFilter { $Message -eq 'Pilot  : 1 orders read, 1 already staged, 0 skipped, 0 to stage' }
+      $kept = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
+      $kept.updated_at | Should -Be $noted.updated_at
+      $kept.state | Should -Be 'staged'
+      $kept.tmw_order | Should -Be '10686484'
+      $kept.note | Should -Be 'status 4 Kiosked'
+      $kept.pilot.dispatchOrderStatusTypeId | Should -Be 4
+      $kept.references.terminals.'14673'.name | Should -Be 'EXAMPLE TERMINAL'
+      Should -Invoke Get-PilotReferenceData -ModuleName PilotCarrierIntegration -Times 0
+  }
+  It 'never lets a skip replace a staged entry' {
+      $dir = Join-Path $TestDrive 'staged-guard/cache'
+      Set-PilotOrderCache $dir 10877997 'staged' '10686484' $rawOrder
+      { Skip-PilotOrder $dir 10877997 'status 4 Kiosked' $rawOrder } | Should -Throw '*staged in TMW*'
+      (Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json).state | Should -Be 'staged'
+  }
 }
 
 Describe 'direct TMW DataExchange staging' {
