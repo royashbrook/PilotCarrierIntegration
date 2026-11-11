@@ -501,36 +501,56 @@ Describe 'poll window and filtering' {
       $cached = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
       $cached | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'staged-job') -Force
       New-Item -ItemType Directory (Join-Path $TestDrive 'staged-job/cache') -Force | Out-Null
-      @{ dispatch_order_id = '10877997'; state = 'staged'; tmw_order = '10686484'; updated_at = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $TestDrive 'staged-job/cache/10877997.json')
+      Set-PilotOrderCache (Join-Path $TestDrive 'staged-job/cache') 10877997 'staged' '10686484' $rawOrder
       Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($rawOrder) }
       Mock Get-PilotReferenceData -ModuleName PilotCarrierIntegration { $references }
       Mock Write-Log -ModuleName PilotCarrierIntegration
       @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
       Should -Invoke Get-PilotReferenceData -ModuleName PilotCarrierIntegration -Times 0
-      Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -ParameterFilter { $Message -eq 'Pilot  : 1 orders read, 1 already staged, 0 skipped, 0 to stage' }
+      Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -ParameterFilter { $Message -eq 'Pilot  : 1 orders read, 1 already staged, 0 of them changed, 0 skipped, 0 to stage' }
   }
-  It 'keeps the latest record Pilot sent on a staged order, and what TMW was built from' {
+  It 'sends a staged order whose record changed back to TMW, and keeps the entry until TMW takes it' {
       $cached = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
       $cached | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'staged-refresh') -Force
       $dir = Join-Path $TestDrive 'staged-refresh/cache'
       Set-PilotOrderCache $dir 10877997 'staged' '10686484' $rawOrder $canonical.references
       $first = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
       Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($rawOrder) }
-      Mock Get-PilotReferenceData -ModuleName PilotCarrierIntegration { throw 'staged must not read references' }
+      Mock Get-PilotReferenceData -ModuleName PilotCarrierIntegration { $references }
       Mock Write-Log -ModuleName PilotCarrierIntegration
       @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
-      (Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json).updated_at | Should -Be $first.updated_at
+      Should -Invoke Get-PilotReferenceData -ModuleName PilotCarrierIntegration -Times 0
       $changed = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
       $changed.dispatchOrderItems[0].gallons = 9999
       Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($changed) }
+      $again = @(Receive-PilotOrders $cached $session 30)
+      $again.Count | Should -Be 1
+      $again[0].pilotOrderId | Should -Be '10877997'
+      @($again[0].stops)[0].freight[0].quantity | Should -Be 9999
+      Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -ParameterFilter { $Message -eq 'Pilot  : 1 orders read, 1 already staged, 1 of them changed, 0 skipped, 0 to stage' }
+      $kept = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
+      $kept.updated_at | Should -Be $first.updated_at
+      $kept.pilot_hash | Should -Be $first.pilot_hash
+      $kept.state | Should -Be 'staged'
+  }
+  It 'notes a changed staged order once when its new record cannot be translated' {
+      $cached = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $cached | Add-Member -NotePropertyName directory -NotePropertyValue (Join-Path $TestDrive 'staged-untranslatable') -Force
+      $dir = Join-Path $TestDrive 'staged-untranslatable/cache'
+      Set-PilotOrderCache $dir 10877997 'staged' '10686484' $rawOrder $canonical.references
+      $changed = $rawOrder | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      $changed.dispatchOrderItems[0].gallons = 9999
+      Mock Get-PilotOrder -ModuleName PilotCarrierIntegration { @($changed) }
+      Mock Get-PilotReferenceData -ModuleName PilotCarrierIntegration { $references }
+      Mock ConvertFrom-PilotOrder -ModuleName PilotCarrierIntegration { throw 'no route' }
+      Mock Write-Log -ModuleName PilotCarrierIntegration
       @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
+      @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
+      Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -Times 1 -Exactly -ParameterFilter { $Message -eq 'Staged : 10877997, TMW order 10686484, now no route' }
       $kept = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
       $kept.state | Should -Be 'staged'
-      $kept.tmw_order | Should -Be '10686484'
+      $kept.note | Should -Be 'no route'
       $kept.pilot.dispatchOrderItems[0].gallons | Should -Be 9999
-      $kept.pilot_hash | Should -Not -Be $first.pilot_hash
-      $kept.references.terminals.'14673'.name | Should -Be 'EXAMPLE TERMINAL'
-      Should -Invoke Get-PilotReferenceData -ModuleName PilotCarrierIntegration -Times 0
   }
   It 'keeps a staged order staged when its record would not stage today, and says why once' {
       $cached = $cfg | ConvertTo-Json -Depth 20 | ConvertFrom-Json
@@ -547,7 +567,7 @@ Describe 'poll window and filtering' {
       $noted = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
       @(Receive-PilotOrders $cached $session 30).Count | Should -Be 0
       Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -Times 1 -Exactly -ParameterFilter { $Message -eq 'Staged : 10877997, TMW order 10686484, now status 4 Kiosked' }
-      Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -Times 2 -Exactly -ParameterFilter { $Message -eq 'Pilot  : 1 orders read, 1 already staged, 0 skipped, 0 to stage' }
+      Should -Invoke Write-Log -ModuleName PilotCarrierIntegration -Times 2 -Exactly -ParameterFilter { $Message -eq 'Pilot  : 1 orders read, 1 already staged, 0 of them changed, 0 skipped, 0 to stage' }
       $kept = Get-Content (Join-Path $dir '10877997.json') -Raw | ConvertFrom-Json
       $kept.updated_at | Should -Be $noted.updated_at
       $kept.state | Should -Be 'staged'
@@ -696,13 +716,52 @@ Describe 'direct TMW DataExchange staging' {
     @($command.parameters.value) | Should -Contain '10877997'
     @($command.parameters.value) | Should -Contain 'B99-UL / B99'
   }
-  It 'drops an order already in TMW without touching it' {
+  It 'leaves an order already in TMW as it is while what Pilot sends matches its latest document' {
     $command.sql | Should -Match 'r.ref_number = @pilot_id'
     $command.sql | Should -Match 'duplicate TMW orders exist for Pilot order ID'
     $command.sql | Should -Match "@replay_action varchar\(40\) = 'EXISTS'"
-    $command.sql | Should -Not -Match 'REVIEW_'
+    $command.sql | Should -Match 'if @existing_fingerprint is not null and @existing_fingerprint <> @fingerprint'
     $command.sql | Should -Match '@requires_review requires_review'
     $command.sql | Should -Match 'partial Pilot order state exists'
+  }
+  It 'files a changed order as an update document for review and never edits its rows' {
+    $existing = ($command.sql -split "`n" | Select-Object -Skip ([array]::IndexOf(($command.sql -split "`n"), '  if @existing_hdr is not null'))) -join "`n"
+    $existing = $existing.Substring(0, $existing.IndexOf('    return;'))
+    $existing | Should -Match "exec @update_ret = dbo.dx_update_order @existing_number, '41', 'U';"
+    $existing | Should -Match "(?s)insert dbo.dx_Archive_header .* values \('dx_204', @source_name, @source_date, null, @existing_number, @existing_hdr, @existing_mov"
+    $existing | Should -Match "select @update_archive, 1, null, null, null, @d1_field001, @d1_field002, @d1_field003, 'U', left\(convert\(varchar\(20\), @existing_number\)"
+    $existing | Should -Match 'from @update_scope where stop_index = 1'
+    $existing | Should -Match "if @commit = 1 commit transaction; else rollback transaction;"
+    $existing | Should -Match "case when @commit = 1 then 'UPDATED' else 'UPDATE_VALIDATED' end"
+    $existing | Should -Not -Match '(?i)\b(update|delete) (dbo\.)?(stops|freightdetail|orderheader)\b'
+    $existing | Should -Not -Match 'dx_EDI_Decision_Update|dx_EDI_OrderState_Update|dx_add_neworder'
+    @($command.parameters.name | Group-Object | Where-Object Count -gt 1).Count | Should -Be 0
+  }
+  It 'leaves a started, completed, cancelled, invoiced or consolidated order alone and says CHANGED' {
+    $command.sql | Should -Match "if @existing_status in \('STD', 'CMP', 'CAN'\) or exists \(select 1 from dbo.orderheader where ord_hdrnumber = @existing_hdr and ord_invoicestatus = 'PPD'\) or \(select count\(1\) from dbo.orderheader o join dbo.orderheader x on x.mov_number = o.mov_number where o.ord_hdrnumber = @existing_hdr\) > 1"
+    $command.sql | Should -Match "set @replay_action = 'CHANGED';"
+  }
+  It 'keeps the new record and reference rows after an update, and notes a change TMW could not take' {
+    Mock Write-Log
+    $dir = Join-Path $TestDrive 'update-job'
+    Set-PilotOrderCache (Join-Path $dir 'cache') 10877997 'staged' '10686900' $rawOrder ([pscustomobject]@{ old = 1 })
+    $changed = $canonical | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+    $changed.raw.dispatchOrderItems[0].gallons = 9999
+    $plan = Join-Path $dir 'plan.xml'
+    Save-PilotOrderPlan -Data @($changed) -Options @{ Path = $plan }
+    Mock Write-TmwOrders { @([pscustomobject]@{ ok = $true; action = 'UPDATED'; pilot_order_id = '10877997'; order_number = '10686900'; edistate = 41; order_status = 'AVL' }) }
+    Send-PilotOrderPlan -Path $plan -Options @{ Settings = @{ directory = $dir; tmw = @{ connection_string = 'unused' } } }
+    $kept = Get-Content (Join-Path $dir 'cache/10877997.json') -Raw | ConvertFrom-Json
+    $kept.pilot.dispatchOrderItems[0].gallons | Should -Be 9999
+    $kept.references.terminals.'14673'.name | Should -Be 'EXAMPLE TERMINAL'
+    $kept.note | Should -BeNullOrEmpty
+    Should -Invoke Write-Log -ParameterFilter { $Message -eq 'Update : 10877997: TMW order 10686900, state 41, filed for review in the EDI queue' }
+    Mock Write-TmwOrders { @([pscustomobject]@{ ok = $true; action = 'CHANGED'; pilot_order_id = '10877997'; order_number = '10686900'; edistate = 20; order_status = 'STD' }) }
+    Send-PilotOrderPlan -Path $plan -Options @{ Settings = @{ directory = $dir; tmw = @{ connection_string = 'unused' } } }
+    $kept = Get-Content (Join-Path $dir 'cache/10877997.json') -Raw | ConvertFrom-Json
+    $kept.note | Should -Be 'changed after TMW order 10686900 went STD, not filed'
+    $kept.references.terminals.'14673'.name | Should -Be 'EXAMPLE TERMINAL'
+    Should -Invoke Write-Log -ParameterFilter { $Message -eq 'Changed: 10877997: changed after TMW order 10686900 went STD, not filed' }
   }
   It 'retries an order until it succeeds' {
     $script:retryCount = 0
