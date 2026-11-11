@@ -360,13 +360,27 @@ function New-TmwOrderCommand {
     "    declare @replay_action varchar(40) = 'EXISTS', @requires_review bit = 0, @detail_rows int = 0;"
     '    if @existing_fingerprint is not null and @existing_fingerprint <> @fingerprint'
     '    begin'
-    "      if @existing_status in ('STD', 'CMP', 'CAN') or exists (select 1 from dbo.orderheader where ord_hdrnumber = @existing_hdr and ord_invoicestatus = 'PPD') or (select count(1) from dbo.orderheader o join dbo.orderheader x on x.mov_number = o.mov_number where o.ord_hdrnumber = @existing_hdr) > 1"
+    # the order row and its move are locked for the rest of the transaction before the gate reads them,
+    # so a dispatcher cannot start, complete or consolidate the order between the check and the update
+    '      declare @existing_mov int, @existing_invoice varchar(6), @update_archive bigint, @update_ret int;'
+    '      select @existing_mov = mov_number, @existing_status = rtrim(ord_status), @existing_invoice = ord_invoicestatus from dbo.orderheader with (updlock, holdlock) where ord_hdrnumber = @existing_hdr;'
+    "      if @existing_status in ('STD', 'CMP', 'CAN') or @existing_invoice = 'PPD' or (select count(1) from dbo.orderheader with (updlock, holdlock) where mov_number = @existing_mov) > 1"
     "        set @replay_action = 'CHANGED';"
     '      else'
     '      begin'
-    '        declare @existing_mov int = (select mov_number from dbo.orderheader where ord_hdrnumber = @existing_hdr), @update_archive bigint, @update_ret int;'
     '        declare @update_scope table (stop_index int not null, freight_index int not null, stop_number int not null, freight_number int not null, primary key (stop_index, freight_index));'
-    '        insert @update_scope select s.stop_index, f.freight_index, s.stp_number, f.fgt_number from (select stp_number, row_number() over (order by stp_sequence) stop_index from dbo.stops where ord_hdrnumber = @existing_hdr) s join (select stp_number, fgt_number, row_number() over (partition by stp_number order by fgt_sequence) freight_index from dbo.freightdetail) f on f.stp_number = s.stp_number;'
+  ))
+  # a document row points at the TMW stop and freight it describes by identity, never by position: the
+  # Pilot item id the order was built with (the freight PO reference) on a pickup or a drop. an item
+  # Pilot added has no TMW row yet and its rows carry no stop or freight number
+  $updateStops = @($PilotOrder.stops)
+  for ($stopIndex = 1; $stopIndex -le $updateStops.Count; $stopIndex++) {
+    $event = if ($updateStops[$stopIndex - 1].type -eq 'PU') { 'LLD' } else { 'LUL' }
+    for ($freightIndex = 1; $freightIndex -le @($updateStops[$stopIndex - 1].freight).Count; $freightIndex++) {
+      $sql.Add("        insert @update_scope select top (1) $stopIndex, $freightIndex, s.stp_number, f.fgt_number from dbo.stops s join dbo.freightdetail f on f.stp_number = s.stp_number join dbo.referencenumber r on r.ref_table = 'freightdetail' and r.ref_tablekey = f.fgt_number and r.ref_type = 'PO' and r.ref_number = @oid${stopIndex}_$freightIndex where s.ord_hdrnumber = @existing_hdr and s.stp_event = '$event' order by f.fgt_number;")
+    }
+  }
+  $sql.AddRange([string[]]@(
     '        insert dbo.dx_Archive_header (dx_importid, dx_sourcename, dx_sourcedate, dx_accepted, dx_ordernumber, dx_orderhdrnumber, dx_movenumber, dx_doctype, dx_docnumber, dx_createdby, dx_createdate, dx_processed, dx_trpid, dx_billto)'
     "        values ('dx_204', @source_name, @source_date, null, @existing_number, @existing_hdr, @existing_mov, '204', '', 'PILOTFEED', @source_date, 'DONE', @partner, @billto);"
     '        set @update_archive = convert(bigint, scope_identity());'

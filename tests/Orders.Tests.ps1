@@ -738,8 +738,23 @@ Describe 'direct TMW DataExchange staging' {
     @($command.parameters.name | Group-Object | Where-Object Count -gt 1).Count | Should -Be 0
   }
   It 'leaves a started, completed, cancelled, invoiced or consolidated order alone and says CHANGED' {
-    $command.sql | Should -Match "if @existing_status in \('STD', 'CMP', 'CAN'\) or exists \(select 1 from dbo.orderheader where ord_hdrnumber = @existing_hdr and ord_invoicestatus = 'PPD'\) or \(select count\(1\) from dbo.orderheader o join dbo.orderheader x on x.mov_number = o.mov_number where o.ord_hdrnumber = @existing_hdr\) > 1"
+    $command.sql | Should -Match "if @existing_status in \('STD', 'CMP', 'CAN'\) or @existing_invoice = 'PPD' or \(select count\(1\) from dbo.orderheader with \(updlock, holdlock\) where mov_number = @existing_mov\) > 1"
     $command.sql | Should -Match "set @replay_action = 'CHANGED';"
+  }
+  It 'locks the order and its move before the gate reads them, so the order cannot move on underneath the update' {
+    $lines = $command.sql -split "`n"
+    $lock = [array]::FindIndex($lines, [Predicate[string]]{ param($l) $l -match 'from dbo.orderheader with \(updlock, holdlock\) where ord_hdrnumber = @existing_hdr' })
+    $gate = [array]::FindIndex($lines, [Predicate[string]]{ param($l) $l -match "if @existing_status in \('STD'" })
+    $update = [array]::FindIndex($lines, [Predicate[string]]{ param($l) $l -match 'dx_update_order' })
+    $lock | Should -BeGreaterThan 0
+    $lock | Should -BeLessThan $gate
+    $gate | Should -BeLessThan $update
+  }
+  It 'points update rows at TMW stops and freight by the Pilot item id, never by position' {
+    $multiCommand.sql | Should -Match "insert @update_scope select top \(1\) 1, 1, s.stp_number, f.fgt_number from dbo.stops s join dbo.freightdetail f on f.stp_number = s.stp_number join dbo.referencenumber r on r.ref_table = 'freightdetail' and r.ref_tablekey = f.fgt_number and r.ref_type = 'PO' and r.ref_number = @oid1_1 where s.ord_hdrnumber = @existing_hdr and s.stp_event = 'LLD'"
+    $multiCommand.sql | Should -Match "r.ref_number = @oid1_2 where s.ord_hdrnumber = @existing_hdr and s.stp_event = 'LLD'"
+    $multiCommand.sql | Should -Match "r.ref_number = @oid2_1 where s.ord_hdrnumber = @existing_hdr and s.stp_event = 'LUL'"
+    $multiCommand.sql | Should -Not -Match 'row_number\(\) over \(order by stp_sequence\)|order by fgt_sequence'
   }
   It 'keeps the new record and reference rows after an update, and notes a change TMW could not take' {
     Mock Write-Log
