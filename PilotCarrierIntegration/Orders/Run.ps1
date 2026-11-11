@@ -35,11 +35,18 @@ function Send-PilotOrderPlan {
   $results = @(Write-TmwOrders -Orders $orders -Cfg $cfg -ConnectionString $cfg.tmw.connection_string -Commit:$commit)
   $byId = @{}; foreach ($order in $orders) { $byId[[string]$order.pilotOrderId] = $order }
   foreach ($result in $results) {
-    # the record is kept either way; only a CREATED order was built from it, EXISTS leaves TMW as it was
+    # the record is kept either way. a CREATED or UPDATED order was built from it with these reference
+    # rows; EXISTS and CHANGED left TMW as it was, so the rows TMW holds are the ones already kept
     $order = $byId[[string]$result.pilot_order_id]
-    if ($result.ok -and $commit) { Set-PilotOrderCache (Get-PilotOrderCacheDir $cfg) $result.pilot_order_id 'staged' $result.order_number $order.raw $(if ($result.action -eq 'CREATED') { $order.references }) }
-    if ($result.ok) { Write-Log ("{0,-7}: {1}: TMW order {2}, state {3}" -f $result.action, $result.pilot_order_id, $result.order_number, $result.edistate) }
-    else { Write-Log ("Failed : {0} after {1} attempt(s): {2}" -f $result.pilot_order_id, $result.attempts, $result.error) }
+    $cacheDir = Get-PilotOrderCacheDir $cfg
+    $kept = Get-PilotOrderCache $cacheDir $result.pilot_order_id
+    $references = if ($result.action -in 'CREATED', 'UPDATED') { $order.references } else { $kept.references }
+    $note = if ($result.action -eq 'CHANGED') { "changed after TMW order $($result.order_number) went $($result.order_status), not filed" }
+    if ($result.ok -and $commit) { Set-PilotOrderCache $cacheDir $result.pilot_order_id 'staged' $result.order_number $order.raw $references $note }
+    if (-not $result.ok) { Write-Log ("Failed : {0} after {1} attempt(s): {2}" -f $result.pilot_order_id, $result.attempts, $result.error) }
+    elseif ($result.action -like 'UPDATE*') { Write-Log ("Update : {0}: TMW order {1}, state {2}, filed for review in the EDI queue" -f $result.pilot_order_id, $result.order_number, $result.edistate) }
+    elseif ($note) { Write-Log ("Changed: {0}: {1}" -f $result.pilot_order_id, $note) }
+    else { Write-Log ("{0,-7}: {1}: TMW order {2}, state {3}" -f $result.action, $result.pilot_order_id, $result.order_number, $result.edistate) }
   }
   $failed = @($results | Where-Object { -not $_.ok })
   if ($failed.Count) { throw "$($failed.Count) Pilot order(s) failed after retries; the next run tries again." }

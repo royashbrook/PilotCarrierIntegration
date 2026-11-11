@@ -137,11 +137,12 @@ to accept or reject in TMW.
   order, or `skipped` with every reason, joined. Each file keeps the last record Pilot sent for the
   order (`pilot`, with its hash), rewritten only when the reason or the record changes, so what
   Pilot sent can be shown later. An order created in TMW also keeps the location, terminal and
-  contract rows it was built from; an order TMW already had keeps the record alone, since TMW was
-  not built from this read. A staged order is passed over before anything else: its TMW order and
-  reference rows are kept, its record is refreshed when Pilot's changes, and when that record would
-  not stage today (its status moved on, an item changed) the reason is kept on the entry as `note`
-  and logged once, `Staged :`, when new or changed. A skip never replaces a staged entry. A skip
+  contract rows it was built from; an order TMW already had keeps the rows it already had. A staged
+  order whose record is unchanged is passed over before anything else. When Pilot's record changes
+  and would still stage, the order is translated again and goes to the writer (see the update
+  bullet below); the entry moves only after TMW took it, so a failed write is tried again. When the
+  record would not stage today (its status moved on) or cannot be translated, the reason is kept on
+  the entry as `note` and logged once, `Staged :`, when new or changed. A skip never replaces a staged entry. A skip
   reason is logged only when it is new or changes. An order file goes `keep_days` (7 by default) after its
   last update, by the date inside it. A dry run keeps no cache.
 - Pilot's location, terminal and contract lists only fill in names and addresses, and TMW maps each
@@ -150,7 +151,20 @@ to accept or reject in TMW.
   lack keeps the id. Either way that stop comes over with no address for people to finish in EDI. A
   partial address stages too, each missing part marked `MISSING` (state `??`).
 - One order is one transaction through TMW's own `dx_*` procedures, with a matching DX archive.
-  The Pilot id is the key: an order already in TMW logs `EXISTS` and is left alone, changed or not.
+  The Pilot id is the key: an order already in TMW logs `EXISTS` and is left alone while what Pilot
+  sends matches its latest archive document (the fingerprint in the source name).
+- A change after staging is filed for review, never applied (0.9.0). When the staged order's latest
+  document differs from what Pilot sends now, the writer adds an update document (purpose `U`, same
+  source name shape) and runs TMW's `dx_update_order` at state 41. An accepted order goes back into
+  the EDI queue at 41 USER UPD PENDING; a pending one stays pending with purpose `U`. The order rows
+  are not touched. People compare the two documents in View EDI Details, edit the order by hand and
+  accept. The log says `Update :`. Accept only acknowledges the update, it does not apply it.
+  **Declining an update cancels the whole order** (TMW sets CAN, state 30): to keep the order and
+  ignore the change, accept it. An order already started, completed, cancelled, invoiced or
+  consolidated is not touched; the log says `Changed:` and the cache entry keeps a note.
+- Every archive document carries its purpose in `dx_updated` (`N` or `U`), as TMW's own imports do.
+  TMW's archive reader (`dx_get_archive_by_ordernumber`) returns only documents with it set, so a
+  document staged before 0.9.0, which left it empty, is not returned there.
 - The SQL checks `db_name()` against `tmw.expected_database` before it writes anything.
 - Orders stage in parallel (`tmw.max_parallel`) with retries (`tmw.retry_attempts`).
 

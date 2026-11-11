@@ -259,6 +259,42 @@ function New-TmwParameter {
   [pscustomobject]@{ name = $Name; type = $Type; size = $Size; value = $Value }
 }
 
+# the archive detail rows as inserts into the header in $Header, stop and freight numbers from the table
+# variable in $Scope. the values are parameters, added once and shared by a create and an update in the
+# same command. -Update writes purpose U in the 02 record, the only field an update document changes
+function Get-DxArchiveDetailSql {
+  param($Plan, $Parameters, [string]$Header, [string]$Scope, [string]$OrderNumber, [switch]$Update)
+  $added = @($Parameters | Where-Object name -like '@d*_field*').Count -gt 0
+  foreach ($row in @($Plan.rows)) {
+    $fieldSql = @{}
+    foreach ($fieldName in @('dx_field001','dx_field002','dx_field003','dx_field004','dx_field005','dx_field006','dx_field007','dx_field008','dx_field009','dx_field013','dx_field014')) {
+      $value = $row.fields[$fieldName]
+      if ([string]$value -eq $script:OrderNumberToken) {
+        $width = if ($fieldName -eq 'dx_field005') { 20 } else { 80 }
+        $fieldSql[$fieldName] = "left(convert(varchar($width), $OrderNumber) + replicate(' ', $width), $width)"
+      } elseif ($null -eq $value) {
+        $fieldSql[$fieldName] = 'null'
+      } else {
+        $parameterName = '@d{0}_{1}' -f $row.sequence, $fieldName.Substring(3)
+        if (-not $added) { [void]$Parameters.Add((New-TmwParameter $parameterName 'VarChar' 200 ([string]$value))) }
+        $fieldSql[$fieldName] = $parameterName
+      }
+    }
+    if ($Update -and ([string]$row.fields.dx_field001).Trim() -eq '02') { $fieldSql['dx_field004'] = "'U'" }
+    $stopSql = if ($row.stopIndex -gt 0) {
+      "(select top (1) stop_number from $Scope where stop_index = $($row.stopIndex) order by freight_index)"
+    } else { 'null' }
+    $freightSql = if ($row.freightIndex -gt 0) {
+      "(select freight_number from $Scope where stop_index = $($row.stopIndex) and freight_index = $($row.freightIndex))"
+    } else { 'null' }
+    ('  insert dbo.dx_Archive_detail (dx_Archive_header_id, dx_seq, dx_stopnumber, dx_freightnumber, dx_manifeststop, dx_field001, dx_field002, dx_field003, dx_field004, dx_field005, dx_field006, dx_field007, dx_field008, dx_field009, dx_field013, dx_field014) ' +
+      "select $Header, $($row.sequence), $stopSql, $freightSql, null, " +
+      (@($fieldSql['dx_field001'], $fieldSql['dx_field002'], $fieldSql['dx_field003'], $fieldSql['dx_field004'],
+         $fieldSql['dx_field005'], $fieldSql['dx_field006'], $fieldSql['dx_field007'], $fieldSql['dx_field008'],
+         $fieldSql['dx_field009'], $fieldSql['dx_field013'], $fieldSql['dx_field014']) -join ', ') + ';')
+  }
+}
+
 function New-TmwOrderCommand {
   param([Parameter(Mandatory)]$PilotOrder, $Cfg, [switch]$Commit, [datetime]$Now = (Get-Date))
   Assert-TmwOrder $PilotOrder $Cfg
@@ -315,12 +351,55 @@ function New-TmwOrderCommand {
     '  begin'
     '    declare @existing_number varchar(12), @existing_state tinyint, @existing_status varchar(6); select @existing_number = rtrim(ord_number), @existing_state = ord_edistate, @existing_status = rtrim(ord_status) from dbo.orderheader where ord_hdrnumber = @existing_hdr;'
     "    declare @existing_fingerprint varchar(64) = case when len(@existing_source_name) = len(@source_prefix) + 65 and left(@existing_source_name, len(@source_prefix) + 1) = @source_prefix + '.' then right(@existing_source_name, 64) end;"
-    # an order already in TMW is left alone: once created, Pilot changes are not carried over
-    "    declare @replay_action varchar(40) = 'EXISTS', @requires_review bit = 0;"
-    '    commit transaction;'
-    "    select cast(1 as bit) ok, @replay_action action, @requires_review requires_review, @pilot_id pilot_order_id, @existing_hdr order_hdrnumber, @existing_number order_number, @existing_archive archive_header_id, @existing_state edistate, @existing_status order_status, 0 detail_rows, @fingerprint incoming_fingerprint, @existing_fingerprint existing_fingerprint, db_name() database_name;"
+    # an order already in TMW keeps its rows. when what Pilot sends now differs from the latest document
+    # TMW holds, the new record is filed as an update document (purpose U) and TMW's own dx_update_order
+    # puts the order back in the EDI queue: 41 USER UPD PENDING for an accepted order, a pending one stays
+    # pending. ops read the difference in View EDI Details, edit by hand and accept. accept does not apply
+    # the document, and a decline cancels the whole order (TMW_Test, pil-order#77). an order already
+    # started, completed, cancelled, invoiced or consolidated is not touched; the result says CHANGED
+    "    declare @replay_action varchar(40) = 'EXISTS', @requires_review bit = 0, @detail_rows int = 0;"
+    '    if @existing_fingerprint is not null and @existing_fingerprint <> @fingerprint'
+    '    begin'
+    # the order row and its move are locked for the rest of the transaction before the gate reads them,
+    # so a dispatcher cannot start, complete or consolidate the order between the check and the update
+    '      declare @existing_mov int, @existing_invoice varchar(6), @update_archive bigint, @update_ret int;'
+    '      select @existing_mov = mov_number, @existing_status = rtrim(ord_status), @existing_invoice = ord_invoicestatus from dbo.orderheader with (updlock, holdlock) where ord_hdrnumber = @existing_hdr;'
+    "      if @existing_status in ('STD', 'CMP', 'CAN') or @existing_invoice = 'PPD' or (select count(1) from dbo.orderheader with (updlock, holdlock) where mov_number = @existing_mov) > 1"
+    "        set @replay_action = 'CHANGED';"
+    '      else'
+    '      begin'
+    '        declare @update_scope table (stop_index int not null, freight_index int not null, stop_number int not null, freight_number int not null, primary key (stop_index, freight_index));'
+  ))
+  # a document row points at the TMW stop and freight it describes by identity, never by position: the
+  # Pilot item id the order was built with (the freight PO reference) on a pickup or a drop. an item
+  # Pilot added has no TMW row yet and its rows carry no stop or freight number
+  $updateStops = @($PilotOrder.stops)
+  for ($stopIndex = 1; $stopIndex -le $updateStops.Count; $stopIndex++) {
+    $event = if ($updateStops[$stopIndex - 1].type -eq 'PU') { 'LLD' } else { 'LUL' }
+    for ($freightIndex = 1; $freightIndex -le @($updateStops[$stopIndex - 1].freight).Count; $freightIndex++) {
+      $sql.Add("        insert @update_scope select top (1) $stopIndex, $freightIndex, s.stp_number, f.fgt_number from dbo.stops s join dbo.freightdetail f on f.stp_number = s.stp_number join dbo.referencenumber r on r.ref_table = 'freightdetail' and r.ref_tablekey = f.fgt_number and r.ref_type = 'PO' and r.ref_number = @oid${stopIndex}_$freightIndex where s.ord_hdrnumber = @existing_hdr and s.stp_event = '$event' order by f.fgt_number;")
+    }
+  }
+  $sql.AddRange([string[]]@(
+    '        insert dbo.dx_Archive_header (dx_importid, dx_sourcename, dx_sourcedate, dx_updated, dx_accepted, dx_ordernumber, dx_orderhdrnumber, dx_movenumber, dx_doctype, dx_docnumber, dx_createdby, dx_createdate, dx_processed, dx_trpid, dx_billto)'
+    "        values ('dx_204', @source_name, @source_date, 'U', null, @existing_number, @existing_hdr, @existing_mov, '204', '', 'PILOTFEED', @source_date, 'DONE', @partner, @billto);"
+    '        set @update_archive = convert(bigint, scope_identity());'
+  ))
+  $sql.AddRange([string[]]@(Get-DxArchiveDetailSql $plan $parameters '@update_archive' '@update_scope' '@existing_number' -Update))
+  $sql.AddRange([string[]]@(
+    "        if (select count(1) from dbo.dx_Archive_detail where dx_Archive_header_id = @update_archive) <> $(@($plan.rows).Count) throw 50015, 'DX archive detail count mismatch', 1;"
+    "        exec @update_ret = dbo.dx_update_order @existing_number, '41', 'U';"
+    "        if @update_ret < 1 throw 50028, 'dx_update_order did not take the Pilot update', 1;"
+    '        select @existing_state = ord_edistate, @existing_status = rtrim(ord_status) from dbo.orderheader where ord_hdrnumber = @existing_hdr;'
+    "        select @existing_archive = @update_archive, @replay_action = case when @commit = 1 then 'UPDATED' else 'UPDATE_VALIDATED' end, @requires_review = 1, @detail_rows = $(@($plan.rows).Count);"
+    '      end'
+    '    end'
+    '    if @commit = 1 commit transaction; else rollback transaction;'
+    "    select cast(1 as bit) ok, @replay_action action, @requires_review requires_review, @pilot_id pilot_order_id, @existing_hdr order_hdrnumber, @existing_number order_number, @existing_archive archive_header_id, @existing_state edistate, @existing_status order_status, @detail_rows detail_rows, @fingerprint incoming_fingerprint, @existing_fingerprint existing_fingerprint, db_name() database_name;"
     '    return;'
     '  end;'
+  ))
+  $sql.AddRange([string[]]@(
     "  declare @mv int = 0, @ret int = 1, @ordnum varchar(12) = '', @stop_number int = 0, @freight_number int = 0;"
     "  declare @validate char(1) = 'N', @carrier varchar(8) = '', @dispatch_status varchar(6) = '', @leg_type varchar(6) = '';"
     '  declare @scope table (stop_index int not null, freight_index int not null, stop_number int not null, freight_number int not null, primary key (stop_index, freight_index));'
@@ -414,38 +493,12 @@ function New-TmwOrderCommand {
     "  if not exists (select 1 from dbo.orderheader where ord_hdrnumber = @order_hdrnumber and ord_order_source = 'EDI' and ord_editradingpartner = @partner and ord_edistate = 10 and ord_revtype1 = @division and rtrim(ord_bookedby) = 'DX') throw 50014, 'created order did not land in the Pilot accept queue', 1;"
     "  if not exists (select 1 from dbo.referencenumber where ref_table = 'orderheader' and ref_tablekey = @order_hdrnumber and ref_type = 'SCA' and ref_number = @scac) throw 50019, 'created order has no exact SCAC reference', 1;"
     '  declare @archive_header_id bigint;'
-    '  insert dbo.dx_Archive_header (dx_importid, dx_sourcename, dx_sourcedate, dx_accepted, dx_ordernumber, dx_orderhdrnumber, dx_movenumber, dx_doctype, dx_docnumber, dx_createdby, dx_createdate, dx_processed, dx_trpid, dx_billto)'
-    "  values ('dx_204', @source_name, @source_date, null, @ordnum, @order_hdrnumber, @mv, '204', '', 'PILOTFEED', @source_date, 'DONE', @partner, @billto);"
+    '  insert dbo.dx_Archive_header (dx_importid, dx_sourcename, dx_sourcedate, dx_updated, dx_accepted, dx_ordernumber, dx_orderhdrnumber, dx_movenumber, dx_doctype, dx_docnumber, dx_createdby, dx_createdate, dx_processed, dx_trpid, dx_billto)'
+    "  values ('dx_204', @source_name, @source_date, 'N', null, @ordnum, @order_hdrnumber, @mv, '204', '', 'PILOTFEED', @source_date, 'DONE', @partner, @billto);"
     '  set @archive_header_id = convert(bigint, scope_identity());'
   ))
 
-  foreach ($row in @($plan.rows)) {
-    $fieldSql = @{}
-    foreach ($fieldName in @('dx_field001','dx_field002','dx_field003','dx_field004','dx_field005','dx_field006','dx_field007','dx_field008','dx_field009','dx_field013','dx_field014')) {
-      $value = $row.fields[$fieldName]
-      if ([string]$value -eq $script:OrderNumberToken) {
-        $width = if ($fieldName -eq 'dx_field005') { 20 } else { 80 }
-        $fieldSql[$fieldName] = "left(convert(varchar($width), @ordnum) + replicate(' ', $width), $width)"
-      } elseif ($null -eq $value) {
-        $fieldSql[$fieldName] = 'null'
-      } else {
-        $parameterName = '@d{0}_{1}' -f $row.sequence, $fieldName.Substring(3)
-        [void]$parameters.Add((New-TmwParameter $parameterName 'VarChar' 200 ([string]$value)))
-        $fieldSql[$fieldName] = $parameterName
-      }
-    }
-    $stopSql = if ($row.stopIndex -gt 0) {
-      "(select top (1) stop_number from @scope where stop_index = $($row.stopIndex) order by freight_index)"
-    } else { 'null' }
-    $freightSql = if ($row.freightIndex -gt 0) {
-      "(select freight_number from @scope where stop_index = $($row.stopIndex) and freight_index = $($row.freightIndex))"
-    } else { 'null' }
-    $sql.Add(('  insert dbo.dx_Archive_detail (dx_Archive_header_id, dx_seq, dx_stopnumber, dx_freightnumber, dx_manifeststop, dx_field001, dx_field002, dx_field003, dx_field004, dx_field005, dx_field006, dx_field007, dx_field008, dx_field009, dx_field013, dx_field014) ' +
-      "select @archive_header_id, $($row.sequence), $stopSql, $freightSql, null, " +
-      (@($fieldSql['dx_field001'], $fieldSql['dx_field002'], $fieldSql['dx_field003'], $fieldSql['dx_field004'],
-         $fieldSql['dx_field005'], $fieldSql['dx_field006'], $fieldSql['dx_field007'], $fieldSql['dx_field008'],
-         $fieldSql['dx_field009'], $fieldSql['dx_field013'], $fieldSql['dx_field014']) -join ', ') + ';'))
-  }
+  $sql.AddRange([string[]]@(Get-DxArchiveDetailSql $plan $parameters '@archive_header_id' '@scope' '@ordnum'))
 
   $detailCount = @($plan.rows).Count
   $sql.AddRange([string[]]@(
