@@ -381,8 +381,8 @@ function New-TmwOrderCommand {
     }
   }
   $sql.AddRange([string[]]@(
-    '        insert dbo.dx_Archive_header (dx_importid, dx_sourcename, dx_sourcedate, dx_accepted, dx_ordernumber, dx_orderhdrnumber, dx_movenumber, dx_doctype, dx_docnumber, dx_createdby, dx_createdate, dx_processed, dx_trpid, dx_billto)'
-    "        values ('dx_204', @source_name, @source_date, null, @existing_number, @existing_hdr, @existing_mov, '204', '', 'PILOTFEED', @source_date, 'DONE', @partner, @billto);"
+    '        insert dbo.dx_Archive_header (dx_importid, dx_sourcename, dx_sourcedate, dx_updated, dx_accepted, dx_ordernumber, dx_orderhdrnumber, dx_movenumber, dx_doctype, dx_docnumber, dx_createdby, dx_createdate, dx_processed, dx_trpid, dx_billto)'
+    "        values ('dx_204', @source_name, @source_date, 'U', null, @existing_number, @existing_hdr, @existing_mov, '204', '', 'PILOTFEED', @source_date, 'DONE', @partner, @billto);"
     '        set @update_archive = convert(bigint, scope_identity());'
   ))
   $sql.AddRange([string[]]@(Get-DxArchiveDetailSql $plan $parameters '@update_archive' '@update_scope' '@existing_number' -Update))
@@ -493,8 +493,8 @@ function New-TmwOrderCommand {
     "  if not exists (select 1 from dbo.orderheader where ord_hdrnumber = @order_hdrnumber and ord_order_source = 'EDI' and ord_editradingpartner = @partner and ord_edistate = 10 and ord_revtype1 = @division and rtrim(ord_bookedby) = 'DX') throw 50014, 'created order did not land in the Pilot accept queue', 1;"
     "  if not exists (select 1 from dbo.referencenumber where ref_table = 'orderheader' and ref_tablekey = @order_hdrnumber and ref_type = 'SCA' and ref_number = @scac) throw 50019, 'created order has no exact SCAC reference', 1;"
     '  declare @archive_header_id bigint;'
-    '  insert dbo.dx_Archive_header (dx_importid, dx_sourcename, dx_sourcedate, dx_accepted, dx_ordernumber, dx_orderhdrnumber, dx_movenumber, dx_doctype, dx_docnumber, dx_createdby, dx_createdate, dx_processed, dx_trpid, dx_billto)'
-    "  values ('dx_204', @source_name, @source_date, null, @ordnum, @order_hdrnumber, @mv, '204', '', 'PILOTFEED', @source_date, 'DONE', @partner, @billto);"
+    '  insert dbo.dx_Archive_header (dx_importid, dx_sourcename, dx_sourcedate, dx_updated, dx_accepted, dx_ordernumber, dx_orderhdrnumber, dx_movenumber, dx_doctype, dx_docnumber, dx_createdby, dx_createdate, dx_processed, dx_trpid, dx_billto)'
+    "  values ('dx_204', @source_name, @source_date, 'N', null, @ordnum, @order_hdrnumber, @mv, '204', '', 'PILOTFEED', @source_date, 'DONE', @partner, @billto);"
     '  set @archive_header_id = convert(bigint, scope_identity());'
   ))
 

@@ -728,7 +728,7 @@ Describe 'direct TMW DataExchange staging' {
     $existing = ($command.sql -split "`n" | Select-Object -Skip ([array]::IndexOf(($command.sql -split "`n"), '  if @existing_hdr is not null'))) -join "`n"
     $existing = $existing.Substring(0, $existing.IndexOf('    return;'))
     $existing | Should -Match "exec @update_ret = dbo.dx_update_order @existing_number, '41', 'U';"
-    $existing | Should -Match "(?s)insert dbo.dx_Archive_header .* values \('dx_204', @source_name, @source_date, null, @existing_number, @existing_hdr, @existing_mov"
+    $existing | Should -Match "(?s)insert dbo.dx_Archive_header .* values \('dx_204', @source_name, @source_date, 'U', null, @existing_number, @existing_hdr, @existing_mov"
     $existing | Should -Match "select @update_archive, 1, null, null, null, @d1_field001, @d1_field002, @d1_field003, 'U', left\(convert\(varchar\(20\), @existing_number\)"
     $existing | Should -Match 'from @update_scope where stop_index = 1'
     $existing | Should -Match "if @commit = 1 commit transaction; else rollback transaction;"
@@ -749,6 +749,10 @@ Describe 'direct TMW DataExchange staging' {
     $lock | Should -BeGreaterThan 0
     $lock | Should -BeLessThan $gate
     $gate | Should -BeLessThan $update
+  }
+  It 'marks each archive document with its purpose in dx_updated, as TMW''s own imports do, so the archive reader returns it' {
+    $command.sql | Should -Match "dx_sourcedate, dx_updated, dx_accepted, dx_ordernumber(?s).*values \('dx_204', @source_name, @source_date, 'U', null, @existing_number"
+    $command.sql | Should -Match "values \('dx_204', @source_name, @source_date, 'N', null, @ordnum"
   }
   It 'points update rows at TMW stops and freight by the Pilot item id, never by position' {
     $multiCommand.sql | Should -Match "insert @update_scope select top \(1\) 1, 1, s.stp_number, f.fgt_number from dbo.stops s join dbo.freightdetail f on f.stp_number = s.stp_number join dbo.referencenumber r on r.ref_table = 'freightdetail' and r.ref_tablekey = f.fgt_number and r.ref_type = 'PO' and r.ref_number = @oid1_1 where s.ord_hdrnumber = @existing_hdr and s.stp_event = 'LLD'"

@@ -162,6 +162,9 @@ to accept or reject in TMW.
   **Declining an update cancels the whole order** (TMW sets CAN, state 30): to keep the order and
   ignore the change, accept it. An order already started, completed, cancelled, invoiced or
   consolidated is not touched; the log says `Changed:` and the cache entry keeps a note.
+- Every archive document carries its purpose in `dx_updated` (`N` or `U`), as TMW's own imports do.
+  TMW's archive reader (`dx_get_archive_by_ordernumber`) returns only documents with it set, so a
+  document staged before 0.9.0, which left it empty, is not returned there.
 - The SQL checks `db_name()` against `tmw.expected_database` before it writes anything.
 - Orders stage in parallel (`tmw.max_parallel`) with retries (`tmw.retry_attempts`).
 
