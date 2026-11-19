@@ -90,29 +90,47 @@ function Receive-PilotOrders {
   # itself runs here, on every order read, before anything else is read
   $include = Get-PilotIncludeStatuses $Cfg
   $open = [Collections.Generic.List[object]]::new()
+  $changed = [Collections.Generic.List[object]]::new()
   $staged = 0; $skipped = 0
   foreach ($record in $records) {
     $cached = Get-PilotOrderCache $cacheDir $record.dispatchOrderId
     if ($cached.state -eq 'staged') {
-      # TMW keeps what it was built from, so a check the record fails now does not unstage it: the entry
-      # keeps the latest record Pilot sent and says once, when new or changed, why it would not stage today.
       # the poll window is about what to stage this run, not about an order TMW already has, so it is not asked
-      Update-PilotStagedOrder $cacheDir $cached $record ([string](Get-PilotOrderSkipReason $record $include))
+      $reason = [string](Get-PilotOrderSkipReason $record $include)
+      # a record that still stages and differs from the one kept goes to TMW again: the writer compares
+      # what it would stage with what TMW holds and files the difference as an update for review. the kept
+      # entry moves only after TMW took it, so a failed write is tried again next run
+      # the same record that still stages has nothing new, and its entry keeps the note the last write left
+      if (-not $reason) {
+        if ($cached.pilot_hash -ne (Get-PilotRecordHash $record)) { $changed.Add([pscustomobject]@{ record = $record; cached = $cached }) }
+        $staged++; continue
+      }
+      # TMW keeps what it was built from, so a check the record fails now does not unstage it: the entry
+      # keeps the latest record Pilot sent and says once, when new or changed, why it would not stage today
+      Update-PilotStagedOrder $cacheDir $cached $record $reason
       $staged++; continue
     }
     $reason = [string](Get-PilotOrderSkipReason $record $include $window)
     if ($reason) { Skip-PilotOrder $cacheDir $record.dispatchOrderId $reason $record; $skipped++; continue }
     $open.Add($record)
   }
-  Write-Log "Pilot  : $($records.Count) orders read, $staged already staged, $skipped skipped, $($open.Count) to stage"
-  if (-not $open.Count) { return }
-  $references = Get-PilotReferenceData $Session $open $cacheDir (Get-PilotKeepDays $Cfg)
+  Write-Log "Pilot  : $($records.Count) orders read, $staged already staged, $($changed.Count) of them changed, $skipped skipped, $($open.Count) to stage"
+  if (-not ($open.Count + $changed.Count)) { return }
+  $references = Get-PilotReferenceData $Session @($open; $changed | ForEach-Object record) $cacheDir (Get-PilotKeepDays $Cfg)
 
   foreach ($record in $open) {
     try {
       ConvertFrom-PilotOrder $record -Cfg $Cfg -References $references
     } catch {
       Skip-PilotOrder $cacheDir $record.dispatchOrderId $_.Exception.Message $record
+    }
+  }
+  foreach ($item in $changed) {
+    try {
+      ConvertFrom-PilotOrder $item.record -Cfg $Cfg -References $references
+    } catch {
+      # a change that cannot be translated cannot be filed, so it is the note, logged once, as for a status
+      Update-PilotStagedOrder $cacheDir $item.cached $item.record $_.Exception.Message
     }
   }
 }
