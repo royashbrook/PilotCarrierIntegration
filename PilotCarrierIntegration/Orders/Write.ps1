@@ -332,7 +332,6 @@ function New-TmwOrderCommand {
     'set xact_abort on;'
     "if db_name() <> @expected_database throw 50001, 'Pilot order target database mismatch', 1;"
     "if (select count(1) from dbo.edi_tender_partner where etp_partnerId = @partner) <> 1 throw 50002, 'PILOT tender partner is not exact', 1;"
-    "if (select count(1) from dbo.edi_trading_partner where trp_id = @partner and cmp_id = @billto) <> 1 throw 50003, 'PILOT trading partner is not exact', 1;"
     "if (select count(1) from dbo.dx_xref where dx_importid = 'dx_204' and dx_trpid = @partner and dx_entitytype = 'TPSettings') <> 39 throw 50004, 'PILOT TPSettings are not exact', 1;"
     "if (select count(1) from dbo.company where cmp_id = 'UNKNOWN') <> 1 throw 50007, 'TMW UNKNOWN company is not exact', 1;"
     "if (select count(1) from dbo.commodity where cmd_code = 'UNKNOWN') <> 1 throw 50008, 'TMW UNKNOWN commodity is not exact', 1;"

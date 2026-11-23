@@ -214,7 +214,7 @@ and is left alone; that operational outcome is separate from source validation.
 }
 ```
 
-TMW needs the trading partner (`create.partner`) set up with its bill-to and DX 204 settings, and an
+TMW needs the inbound tender partner (`create.partner`), its bill-to and DX 204 settings, and an
 `UNKNOWN` company and commodity. To test, add `"dry_run": true`: every order runs through the full
 staging SQL and is rolled back.
 
