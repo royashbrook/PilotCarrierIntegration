@@ -657,6 +657,9 @@ Describe 'direct TMW DataExchange staging' {
     $command.sql | Should -Not -Match '(?im)^\s*(create|alter|drop)\s+(table|proc|view|function|trigger)'
   }
   It 'requires EDI/PILOT/state 10 before commit' {
+    $command.sql | Should -Not -Match '\bedi_trading_partner\b'
+    $command.sql | Should -Match 'from dbo.edi_tender_partner where etp_partnerId = @partner'
+    $command.sql | Should -Match "dx_entitytype = 'TPSettings'\) <> 39"
     $command.sql | Should -Match "ord_order_source = 'EDI'"
     $command.sql | Should -Match 'ord_editradingpartner = @partner'
     $command.sql | Should -Match 'ord_edistate = 10'
